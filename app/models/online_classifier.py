@@ -80,8 +80,10 @@ class OnlineClassifier:
     @staticmethod
     def decide_action(p_up, threshold: float) -> int:
         p = float(np.asarray(p_up).ravel()[0])
-        if p >= threshold: return 1
-        if p <= (1.0 - threshold): return -1
+        if p >= threshold:
+            return 1
+        if p <= (1.0 - threshold):
+            return -1
         return 0
 
     def save(self) -> None:

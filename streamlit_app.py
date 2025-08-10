@@ -1,5 +1,6 @@
 
-import streamlit as st, traceback
+import streamlit as st
+import traceback
 try:
     from app.ui.st_app import main
     main()
