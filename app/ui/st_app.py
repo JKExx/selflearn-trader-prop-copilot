@@ -1,0 +1,630 @@
+# app/ui/st_app.py
+from __future__ import annotations
+
+import os
+import json
+import pathlib
+import traceback
+from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import streamlit as st
+
+# ------------------------------------------------------------------
+# Streamlit compatibility: rerun wrapper (new: st.rerun, old: experimental_rerun)
+def _rerun():
+    if hasattr(st, "rerun"):
+        st.rerun()
+    elif hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
+# ------------------------------------------------------------------
+
+# Use the standardizer from backtest so column names never bite us
+from ..backtest import run_backtest, _std_ohlcv as _std_ohlcv_bt
+from ..analysis.metrics import compute_metrics
+from ..analysis.prop_eval import PropConfig, evaluate_prop
+
+def _last_close(df: pd.DataFrame) -> float:
+    std = _std_ohlcv_bt(df)
+    return float(std["close"].iloc[-1])
+
+def _last_atr(df: pd.DataFrame, period: int = 14) -> float:
+    std = _std_ohlcv_bt(df)
+    hi, lo, cl = std["high"], std["low"], std["close"]
+    prev_close = cl.shift(1)
+    tr = pd.concat([(hi - lo).abs(),
+                    (hi - prev_close).abs(),
+                    (lo - prev_close).abs()], axis=1).max(axis=1)
+    atr = tr.rolling(period, min_periods=1).mean()
+    return float(atr.iloc[-1])
+
+# ---------------- Data fetchers ----------------
+try:
+    # Yahoo kept only as a fallback; OANDA is preferred for FX/metals
+    from ..dataio.yf import get_ohlcv as yf_get
+except Exception:
+    yf_get = None
+
+HAVE_OANDA = False
+try:
+    from ..dataio.oanda import get_ohlcv_oanda, _to_oanda_instrument
+    HAVE_OANDA = True
+except Exception:
+    HAVE_OANDA = False
+
+# optional modules
+try:
+    from ..news import fetch_ics
+except Exception:
+    fetch_ics = None
+
+try:
+    from ..alerts import send_slack, send_discord
+except Exception:
+    def send_slack(*a, **k): return False
+    def send_discord(*a, **k): return False
+
+
+def _bootstrap_secrets():
+    """Load OANDA token/env from ~/.selflearntrader/secrets.toml if present."""
+    try:
+        p = pathlib.Path.home() / ".selflearntrader" / "secrets.toml"
+        if p.exists():
+            import toml
+            s = toml.load(p)
+            os.environ.setdefault("OANDA_TOKEN", s.get("OANDA_TOKEN", ""))
+            os.environ.setdefault("OANDA_ENV", s.get("OANDA_ENV", "PRACTICE"))
+            st.session_state.setdefault("OANDA_TOKEN", s.get("OANDA_TOKEN", ""))
+    except Exception:
+        pass
+
+_bootstrap_secrets()
+
+# ================= Helpers =================
+
+def _fetch_data(source: str, symbol: str, interval: str, start: str, end: str | None):
+    """Fetch OHLCV for given source. OANDA preferred."""
+    if source == "OANDA":
+        if not HAVE_OANDA:
+            raise RuntimeError("OANDA selected but module/env missing.")
+        ins = _to_oanda_instrument(symbol)
+        df = get_ohlcv_oanda(symbol=ins, interval=interval, start=start, end=end if end else None)
+        return df, f"OANDA {ins} {interval}"
+
+    if source == "Yahoo":
+        if yf_get is None:
+            raise RuntimeError("Yahoo fetcher not available in this build.")
+        df = yf_get(symbol=symbol, interval=interval, start=start, end=end if end else None)
+        return df, f"Yahoo {symbol} {interval}"
+
+    raise ValueError(f"Unknown source: {source}")
+
+
+def _units_to_lots(instrument: str, units: int) -> float:
+    """Pretty-print lots for certain instruments (OANDA still uses integer units for orders)."""
+    ins = (instrument or "").upper()
+    if ins.startswith("XAU"):
+        return units / 100.0  # 100 oz ~ 1 std lot
+    return float(units)
+
+
+def main():
+    st.set_page_config(page_title="SelfLearn Trader — Prop-ready", layout="wide")
+    st.title("🙂 SelfLearn Trader — Prop-ready")
+
+    # ----- Sidebar -----
+    with st.sidebar:
+        st.header("Data")
+        sources = ["OANDA"] if HAVE_OANDA else ["Yahoo"]
+        source = st.selectbox("Data source", sources, index=0, key="source")
+        default_symbol = "XAU_USD" if source == "OANDA" else "XAUUSD=X"
+        symbol = st.text_input("Symbol", value=st.session_state.get("symbol", default_symbol), key="symbol")
+        interval = st.selectbox("Interval", ["15m", "30m", "1h", "1d"], index=2, key="interval")
+        start = st.text_input("Data start (UTC)", value=st.session_state.get("start", "2025-01-01"), key="start")
+        end = st.text_input("Data end (optional)", value=st.session_state.get("end", ""), key="end")
+
+        st.header("Decision & Learning")
+        threshold = st.slider("Decision threshold", 0.50, 0.75, st.session_state.get("threshold", 0.69), 0.01, key="threshold")
+        colA, colB, colC = st.columns([1, 1, 1])
+        with colA:
+            eps_start = st.number_input("Epsilon start", 0.0, 1.0, st.session_state.get("eps_start", 0.03), step=0.01, key="eps_start")
+        with colB:
+            eps_final = st.number_input("Epsilon final", 0.0, 1.0, st.session_state.get("eps_final", 0.00), step=0.01, key="eps_final")
+        with colC:
+            eps_decay_trades = st.number_input("Epsilon decay trades", 0, 5000, st.session_state.get("eps_decay_trades", 75), step=25, key="eps_decay_trades")
+
+        trade_start = st.text_input("Trade start date (UTC, optional)", value=st.session_state.get("trade_start", ""), key="trade_start")
+        min_samples = st.number_input("Warmup bars (for scaler init)", 50, 10000, st.session_state.get("min_samples", 1000), 50, key="min_samples")
+
+        st.header("Risk & Costs")
+        starting_cash = st.number_input("Starting cash", 1000.0, 5_000_000.0, st.session_state.get("starting_cash", 10_000.0), 1000.0, key="starting_cash")
+        risk_per_trade_pct = st.number_input("Risk per trade (%)", 0.1, 5.0, st.session_state.get("risk_per_trade_pct", 1.0), 0.1, key="risk_per_trade_pct")
+        atr_mult = st.number_input("ATR multiple for stop", 0.2, 5.0, st.session_state.get("atr_mult", 1.0), 0.1, key="atr_mult")
+        spread_pips = st.number_input("Spread (pips, RT)", 0.0, 10.0, st.session_state.get("spread_pips", 0.20), 0.05, key="spread_pips")
+        slippage_pips = st.number_input("Slippage (pips each side)", 0.0, 10.0, st.session_state.get("slippage_pips", 0.10), 0.05, key="slippage_pips")
+        commission = st.number_input("Commission per trade (quote ccy)", 0.0, 100.0, st.session_state.get("commission", 0.0), 0.1, key="commission")
+
+        st.header("Prop Mode (enforcement)")
+        daily_loss_pct = st.number_input("Daily loss cap %", 0.0, 20.0, st.session_state.get("daily_loss_pct", 4.5), 0.1, key="daily_loss_pct")
+        overall_loss_pct = st.number_input("Overall loss cap %", 0.0, 50.0, st.session_state.get("overall_loss_pct", 10.0), 0.1, key="overall_loss_pct")
+        stop_target_on = st.checkbox("Stop at profit target", value=st.session_state.get("stop_target_on", True), key="stop_target_on")
+        stop_target_pct = (st.number_input("Profit target %", 0.0, 100.0, st.session_state.get("stop_target_pct", 8.0), 0.5, key="stop_target_pct") / 100.0) if stop_target_on else None
+        friday_cutoff_local = int(st.number_input("Friday cutoff hour (New York local)", 0, 23, int(st.session_state.get("friday_cutoff_local", 22)), 1, key="friday_cutoff_local"))
+
+        st.header("Gating & Persistence")
+        gate_kz = st.checkbox("Only trade in London/NY killzones (UTC)", value=st.session_state.get("gate_kz", True), key="gate_kz")
+        persist_model = st.checkbox("Persist model between runs", value=st.session_state.get("persist_model", False), key="persist_model")
+
+        with st.expander("News filter (toggle/ICS)"):
+            news_on = st.checkbox("Enable news blackout", value=st.session_state.get("news_on", False), key="news_on")
+            ics_url = st.text_input("ICS / calendar URL", value=st.session_state.get("ics_url", ""), key="ics_url", placeholder="webcal:// or https:// …")
+            kws_default = st.session_state.get("news_keywords", "USD;High;FOMC;CPI;NFP")
+            kws = st.text_input("Keywords (semicolon separated)", value=kws_default, key="news_keywords")
+            news_window = st.slider("Blackout ± minutes", min_value=0, max_value=15, value=st.session_state.get("news_window", 2), key="news_window")
+            news_events = []
+            if news_on and ics_url and st.button("Test fetch ICS"):
+                if fetch_ics is None:
+                    st.warning("ICS parser not available in this build.")
+                else:
+                    try:
+                        news_events = fetch_ics(ics_url)
+                        st.success(f"Fetched {len(news_events)} events.")
+                        preview = [{"start": str(e["start"]), "end": str(e["end"]), "summary": e["summary"][:80]} for e in news_events[:30]]
+                        st.write(preview)
+                    except Exception as e:
+                        st.error(f"{e}")
+
+        # ---- Guardrails (Advanced) ----
+        with st.expander("Advanced guardrails", expanded=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                trailing_hwm_enabled = st.checkbox("Enable trailing HWM cap", value=True, key="trailing_hwm_enabled")
+                trailing_hwm_cap_pct = (st.number_input("Trailing HWM cap % (stop)", 0.0, 20.0, 3.0, 0.5, key="trailing_hwm_cap_pct_val") / 100.0) if trailing_hwm_enabled else None
+                max_trades_per_day = st.number_input("Max trades per day", 0, 50, 5, 1)
+                max_trades_per_day = int(max_trades_per_day) if max_trades_per_day > 0 else None
+                intraday_dd_enabled = st.checkbox("Enable max intraday DD from day high", value=True, key="intraday_dd_enabled")
+                max_intraday_dd_from_high_pct = (st.number_input("Max intraday DD from day high % (lock day)", 0.5, 20.0, 3.0, 0.5, key="intraday_dd_val") / 100.0) if intraday_dd_enabled else None
+            with col2:
+                loss_streak_trigger = st.number_input("Loss streak trigger (N losses)", 0, 10, 2, 1)
+                loss_streak_pause_bars = st.number_input("Pause bars after loss streak", 0, 100, 4, 1)
+                dd_adapt_enabled = st.checkbox("Enable drawdown adapt mode", value=True, key="dd_adapt_enabled")
+                dd_adapt_threshold_pct = (st.number_input("Adapt mode below HWM %", 0.5, 20.0, 2.0, 0.5, key="dd_adapt_thresh_val") / 100.0) if dd_adapt_enabled else None
+                dd_adapt_risk = (st.number_input("Risk in adapt mode %", 0.1, 5.0, 0.5, 0.1, key="dd_adapt_risk_val") / 100.0) if dd_adapt_enabled else None
+                dd_adapt_threshold_bump = (st.number_input("Threshold bump in adapt", 0.0, 0.1, 0.01, 0.01, key="dd_adapt_bump_val")) if dd_adapt_enabled else 0.0
+
+        # ---- Presets ----
+        st.header("Presets")
+        os.makedirs("presets", exist_ok=True)
+
+        def save_preset(name: str, payload: dict):
+            path = os.path.join("presets", f"{name}.json")
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2)
+
+        def load_preset(name: str) -> dict:
+            path = os.path.join("presets", f"{name}.json")
+            with open(path) as f:
+                return json.load(f)
+
+        preset_name = st.text_input("Preset name", st.session_state.get("preset_name", "GOAT_XAU_1h_069"), key="preset_name")
+        colP1, colP2, colP3 = st.columns([1, 1, 1])
+        with colP1:
+            if st.button("💾 Save preset"):
+                payload = {
+                    "symbol": symbol, "interval": interval, "threshold": float(threshold),
+                    "epsilon_start": float(eps_start), "epsilon_final": float(eps_final),
+                    "epsilon_decay_trades": int(eps_decay_trades),
+                    "warmup_bars": int(min_samples),
+                    "trade_start_date": trade_start,
+                    "starting_cash": float(starting_cash),
+                    "risk_per_trade": float(risk_per_trade_pct / 100.0),
+                    "atr_multiple": float(atr_mult),
+                    "spread_pips": float(spread_pips),
+                    "slippage_pips": float(slippage_pips),
+                    "commission_per_trade": float(commission),
+                    "gate_killzones": bool(gate_kz),
+                    "persist_model": bool(persist_model),
+                    "enforce_daily_cap": True, "daily_cap_pct": float(daily_loss_pct / 100.0),
+                    "enforce_overall_cap": True, "overall_cap_pct": float(overall_loss_pct / 100.0),
+                    "friday_cutoff_local": int(friday_cutoff_local),
+                    "stop_at_profit_target_pct": (float(stop_target_pct) if stop_target_pct is not None else None),
+                    # news
+                    "news_on": bool(st.session_state.get("news_on", False)),
+                    "ics_url": st.session_state.get("ics_url", ""),
+                    "news_keywords": st.session_state.get("news_keywords", ""),
+                    "news_blackout_minutes": int(st.session_state.get("news_window", 0)),
+                    # guardrails
+                    "trailing_hwm_cap_pct": float(trailing_hwm_cap_pct) if trailing_hwm_enabled else None,
+                    "max_trades_per_day": (int(max_trades_per_day) if max_trades_per_day else None),
+                    "loss_streak_trigger": int(loss_streak_trigger),
+                    "loss_streak_pause_bars": int(loss_streak_pause_bars),
+                    "dd_adapt_threshold_pct": float(dd_adapt_threshold_pct) if dd_adapt_enabled else None,
+                    "dd_adapt_risk": float(dd_adapt_risk) if dd_adapt_enabled else None,
+                    "dd_adapt_threshold_bump": float(dd_adapt_threshold_bump) if dd_adapt_enabled else 0.0,
+                    "max_intraday_dd_from_high_pct": float(max_intraday_dd_from_high_pct) if intraday_dd_enabled else None,
+                }
+                save_preset(preset_name, payload)
+                st.success(f"Saved preset → presets/{preset_name}.json")
+        with colP2:
+            preset_files = [""] + [p[:-5] for p in os.listdir("presets") if p.endswith(".json")]
+            selected = st.selectbox("Load preset", options=preset_files, index=0, key="preset_select")
+        with colP3:
+            if st.button("⤵️ Apply loaded preset"):
+                if selected:
+                    try:
+                        data = load_preset(selected)
+                        for k, v in data.items():
+                            # map some keys to UI state
+                            map_key = {
+                                "risk_per_trade": "risk_per_trade_pct",
+                                "atr_multiple": "atr_mult",
+                                "daily_cap_pct": "daily_loss_pct",
+                                "overall_cap_pct": "overall_loss_pct",
+                                "stop_at_profit_target_pct": "stop_target_pct",
+                            }.get(k, k)
+                            if map_key == "risk_per_trade_pct":
+                                st.session_state[map_key] = float(v) * 100.0
+                            elif map_key in ("daily_loss_pct", "overall_loss_pct", "stop_target_pct"):
+                                st.session_state[map_key] = float(v) * 100.0 if v is not None else st.session_state.get(map_key, None)
+                            else:
+                                st.session_state[map_key] = v
+                        st.success(f"Applied preset '{selected}'. Reloading UI…")
+                        _rerun()
+                    except Exception as e:
+                        st.error(f"Failed to apply preset: {e}")
+
+        # ---- Broker API (input & test) ----
+        with st.expander("🔐 Broker API"):
+            try:
+                import toml
+            except Exception:
+                toml = None
+            oanda_token = st.text_input("OANDA API token", value=os.environ.get("OANDA_TOKEN", ""), type="password")
+            oanda_env = st.selectbox("Environment", ["practice", "live"], index=0)
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Save locally"):
+                    try:
+                        if toml is None:
+                            raise RuntimeError("Package 'toml' not installed: pip install toml")
+                        home = pathlib.Path.home() / ".selflearntrader"
+                        home.mkdir(parents=True, exist_ok=True)
+                        p = home / "secrets.toml"
+                        data = {}
+                        if p.exists():
+                            data = toml.load(p)
+                        data["OANDA_TOKEN"] = oanda_token
+                        data["OANDA_ENV"] = oanda_env.upper()
+                        with open(p, "w") as f:
+                            toml.dump(data, f)
+                        os.environ["OANDA_TOKEN"] = oanda_token
+                        os.environ["OANDA_ENV"] = oanda_env.upper()
+                        st.success(f"Saved to {p}")
+                    except Exception as e:
+                        st.error(f"Save failed: {e}")
+            with c2:
+                if st.button("Test connection"):
+                    try:
+                        if not oanda_token:
+                            raise RuntimeError("Token is empty.")
+                        if not HAVE_OANDA:
+                            raise RuntimeError("OANDA module not available.")
+                        ins = _to_oanda_instrument("XAU_USD")
+                        end_d = datetime.utcnow().strftime("%Y-%m-%d")
+                        start_d = (datetime.utcnow() - timedelta(days=2)).strftime("%Y-%m-%d")
+                        df_ping = get_ohlcv_oanda(symbol=ins, interval="1h", start=start_d, end=end_d)
+                        if df_ping is None or df_ping.empty:
+                            raise RuntimeError("No data returned (check token/env).")
+                        st.success(f"OK: received {len(df_ping)} bars.")
+                    except Exception as e:
+                        st.error(f"Test failed: {e}")
+                        st.code(traceback.format_exc())
+
+    risk_per_trade = risk_per_trade_pct / 100.0
+
+    tabs = st.tabs(["Backtest", "Metrics", "Sweep", "Trades", "Compliance", "Go Live", "Debug"])
+
+    # ===== Backtest =====
+    with tabs[0]:
+        if st.button("Run Backtest", type="primary"):
+            try:
+                with st.spinner("Fetching data and running backtest..."):
+                    df, used = _fetch_data(source, symbol, interval, start, end)
+                    st.caption(f"Using {used} | Range: {df.index[0].date()} → {df.index[-1].date()} (UTC)")
+
+                    # News prep
+                    news_events_to_pass = None
+                    news_keywords_list = None
+                    if st.session_state.get("news_on") and st.session_state.get("ics_url") and fetch_ics:
+                        try:
+                            news_events_to_pass = fetch_ics(st.session_state["ics_url"])
+                            news_keywords_list = [k.strip() for k in (st.session_state.get("news_keywords") or "").split(";")]
+                        except Exception as e:
+                            st.warning(f"News fetch skipped: {e}")
+
+                    res = run_backtest(
+                        df,
+                        symbol=symbol, interval=interval,
+                        threshold=threshold,
+                        epsilon_start=eps_start, epsilon_final=eps_final, epsilon_decay_trades=int(eps_decay_trades),
+                        warmup_bars=int(min_samples),
+                        trade_start_date=trade_start if trade_start.strip() else None,
+                        starting_cash=starting_cash,
+                        risk_per_trade=risk_per_trade, atr_multiple=atr_mult,
+                        spread_pips=spread_pips, slippage_pips=slippage_pips, commission_per_trade=commission,
+                        gate_killzones=gate_kz,
+                        persist_model=persist_model,
+                        enforce_overall_cap=True, overall_cap_pct=overall_loss_pct / 100.0,
+                        enforce_daily_cap=True, daily_cap_pct=daily_loss_pct / 100.0,
+                        day_boundary_tz="America/New_York", friday_cutoff_local=friday_cutoff_local,
+                        stop_at_profit_target_pct=(stop_target_pct if stop_target_on else None),
+                        news_events=news_events_to_pass, news_keywords=news_keywords_list,
+                        news_blackout_minutes=int(st.session_state.get("news_window", 0)) if st.session_state.get("news_on") else 0,
+                        # guardrails
+                        trailing_hwm_cap_pct=trailing_hwm_cap_pct,
+                        max_trades_per_day=max_trades_per_day,
+                        loss_streak_pause_bars=int(loss_streak_pause_bars),
+                        loss_streak_trigger=int(loss_streak_trigger),
+                        dd_adapt_threshold_pct=dd_adapt_threshold_pct,
+                        dd_adapt_risk=dd_adapt_risk,
+                        dd_adapt_threshold_bump=dd_adapt_threshold_bump,
+                        max_intraday_dd_from_high_pct=max_intraday_dd_from_high_pct,
+                    )
+                st.session_state["last_result"] = res
+                st.session_state["last_trades"] = res.trades.copy()
+                st.success(f"Backtest complete. Stop reason: {res.stop_reason or '—'}")
+
+                if not res.trades.empty:
+                    # Plot equity
+                    fig = plt.figure()
+                    plt.plot(res.equity_curve)
+                    plt.xlabel("Trade #")
+                    plt.ylabel("Equity")
+                    st.pyplot(fig)
+
+                    # ---- Stop diagnostics ----
+                    tr = res.trades.copy()
+                    eq = tr["equity_after"].astype(float)
+                    hwm = eq.cummax()
+                    dd = (eq / hwm) - 1.0
+                    max_dd = float(dd.min()) if len(dd) else 0.0
+                    st.caption(f"Max DD: {max_dd*100:.2f}%  |  Trades: {len(tr)}")
+
+                    if res.stop_reason == "trailing_hwm_cap" and trailing_hwm_cap_pct is not None:
+                        # find first bar where drawdown >= cap
+                        trig = dd[dd <= -float(trailing_hwm_cap_pct)]
+                        if not trig.empty:
+                            i = trig.index[0]
+                            ts = tr.loc[tr.index == i, "time_close"].iloc[0] if "time_close" in tr.columns else str(i)
+                            st.warning(f"Trailing HWM cap triggered at {ts} "
+                                       f"(DD {abs(dd.loc[i])*100:.2f}% ≥ cap {trailing_hwm_cap_pct*100:.2f}%).")
+                else:
+                    st.info("No trades executed (check gates/threshold/warmup).")
+            except Exception as e:
+                st.error(f"Backtest failed: {e}")
+                st.code(traceback.format_exc())
+
+    # ===== Metrics =====
+    with tabs[1]:
+        st.subheader("Performance Metrics")
+        tr = st.session_state.get("last_trades")
+        if tr is None or tr.empty:
+            st.info("Run a backtest first.")
+        else:
+            st.json(compute_metrics(tr))
+
+    # ===== Sweep =====
+    with tabs[2]:
+        st.subheader("Threshold Sweep")
+        tr = st.session_state.get("last_trades")
+        if tr is None or tr.empty:
+            st.info("Run a backtest first.")
+        else:
+            df_tr = tr.copy()
+            ts = np.round(np.linspace(0.50, 0.72, 12), 3)
+            rows = []
+            for t in ts:
+                mask = ((df_tr["side"] == 1) & (df_tr["p_up"] >= t)) | ((df_tr["side"] == -1) & (df_tr["p_up"] <= (1 - t)))
+                sub = df_tr[mask]
+                wins = sub["pnl"][sub["pnl"] > 0].sum()
+                losses = sub["pnl"][sub["pnl"] < 0].sum()
+                pf = (wins / abs(losses)) if float(losses) != 0 else float("inf")
+                rows.append({"threshold": float(t), "trades": int(len(sub)), "total_pnl": float(sub["pnl"].sum()),
+                             "profit_factor": (float("inf") if pf == float("inf") else float(pf))})
+            sweep = pd.DataFrame(rows)
+            st.dataframe(sweep, use_container_width=True)
+            fig = plt.figure(); plt.plot(sweep["threshold"], sweep["total_pnl"]); plt.xlabel("Threshold"); plt.ylabel("Total PnL")
+            st.pyplot(fig)
+
+    # ===== Trades =====
+    with tabs[3]:
+        st.subheader("Trades")
+        tr = st.session_state.get("last_trades")
+        if tr is None or tr.empty:
+            st.info("Run a backtest first.")
+        else:
+            st.dataframe(tr.head(1000), use_container_width=True)
+            st.download_button("Download trades.csv", tr.to_csv(index=False), "trades.csv")
+
+    # ===== Compliance =====
+    with tabs[4]:
+        st.subheader("Prop Compliance (Evaluation)")
+        tr = st.session_state.get("last_trades")
+        if tr is None or tr.empty:
+            st.info("Run a backtest first.")
+        else:
+            news_df = None
+            pcfg = PropConfig(
+                daily_loss_pct=daily_loss_pct / 100.0,
+                overall_loss_pct=overall_loss_pct / 100.0,
+                profit_target_pct=None,
+                day_boundary_tz="America/New_York",
+                friday_cutoff_hour_local=int(friday_cutoff_local),
+                news_blackout_mins=int(st.session_state.get("news_window", 0)) if st.session_state.get("news_on") else 0,
+                relevant_currencies=set()
+            )
+            board, daily, violations = evaluate_prop(tr, pcfg, news_df=news_df)
+            left, right = st.columns([1, 1])
+            with left: st.json(board)
+            with right:
+                if not daily.empty:
+                    st.dataframe(daily[["prop_day", "day_min_dd_pct", "breached_daily"]], use_container_width=True)
+
+    # ===== Go Live (signals) =====
+    with tabs[5]:
+        st.subheader("Go Live (paper signals for Copiix)")
+        slack_url = st.text_input("Slack webhook URL (optional)", value=st.session_state.get("slack_url", ""))
+        discord_url = st.text_input("Discord webhook URL (optional)", value=st.session_state.get("discord_url", ""))
+
+        parity_mode = st.checkbox("Backtest parity mode (use exact params/ATR)", value=True)
+        tp_r_multiple = st.number_input("TP multiple (R)", 0.1, 5.0, 1.0, 0.1)
+
+        colL, colR = st.columns([1, 1])
+        running = st.session_state.get("live_running", False)
+        with colL:
+            if not running and st.button("▶️ Start"):
+                st.session_state["live_running"] = True
+                _rerun()
+        with colR:
+            if running and st.button("⏹ Stop"):
+                st.session_state["live_running"] = False
+                _rerun()
+
+        # optional auto-refresh (requires streamlit-autorefresh)
+        try:
+            if st.session_state.get("live_running", False):
+                from streamlit_autorefresh import st_autorefresh
+                st_autorefresh(interval=60_000, key="live_refresh")  # 60s
+        except Exception:
+            pass
+
+        if st.session_state.get("live_running", False):
+            try:
+                # Use the sidebar Data start to now for parity
+                end_d = datetime.utcnow().strftime("%Y-%m-%d")
+                start_d = start
+                # Always prefer OANDA live if available
+                live_source = "OANDA" if HAVE_OANDA else source
+                df_live, used = _fetch_data(live_source, symbol, interval, start_d, end_d)
+
+                if df_live is None or df_live.empty:
+                    st.warning("No live data returned (market closed or token/range issue).")
+                    st.stop()
+
+                # --- Stale-data guard (don’t emit when market is closed / feed old) ---
+                std = _std_ohlcv_bt(df_live)
+                last_ts = std.index[-1]
+                now = pd.Timestamp.now(tz="UTC")
+                bar_minutes = {"15m": 15, "30m": 30, "1h": 60, "1d": 1440}.get(interval, 60)
+                if (now - last_ts) > pd.Timedelta(minutes=bar_minutes * 1.5):
+                    st.info(f"Data looks stale (last bar {last_ts}, now {now}). Market likely closed.")
+                    st.stop()
+
+                # Freeze randomness unless parity_mode is False (then user epsilon applies)
+                eps_start_live = eps_start if parity_mode else 0.0
+                eps_final_live = eps_final if parity_mode else 0.0
+                eps_decay_live = int(eps_decay_trades) if parity_mode else 0
+                persist_live = persist_model if parity_mode else True
+
+                res = run_backtest(
+                    df_live,
+                    symbol=symbol, interval=interval,
+                    threshold=threshold,
+                    epsilon_start=eps_start_live, epsilon_final=eps_final_live, epsilon_decay_trades=eps_decay_live,
+                    warmup_bars=int(min_samples),
+                    trade_start_date=trade_start if trade_start.strip() else None,
+                    starting_cash=starting_cash,
+                    risk_per_trade=(risk_per_trade_pct / 100.0), atr_multiple=atr_mult,
+                    spread_pips=spread_pips, slippage_pips=slippage_pips, commission_per_trade=commission,
+                    gate_killzones=gate_kz,
+                    persist_model=persist_live,
+                    enforce_overall_cap=True, overall_cap_pct=overall_loss_pct / 100.0,
+                    enforce_daily_cap=True, daily_cap_pct=daily_loss_pct / 100.0,
+                    day_boundary_tz="America/New_York", friday_cutoff_local=friday_cutoff_local,
+                    stop_at_profit_target_pct=(stop_target_pct if stop_target_on else None),
+                    # guardrails
+                    trailing_hwm_cap_pct=trailing_hwm_cap_pct,
+                    max_trades_per_day=max_trades_per_day,
+                    loss_streak_pause_bars=int(loss_streak_pause_bars),
+                    loss_streak_trigger=int(loss_streak_trigger),
+                    dd_adapt_threshold_pct=dd_adapt_threshold_pct,
+                    dd_adapt_risk=dd_adapt_risk,
+                    dd_adapt_threshold_bump=dd_adapt_threshold_bump,
+                    max_intraday_dd_from_high_pct=max_intraday_dd_from_high_pct,
+                )
+
+                tr = res.trades.tail(1)
+                if tr.empty or int(tr.iloc[0]["side"]) == 0:
+                    # No trade on last bar; show last bar info for sanity
+                    st.write("No trade on last completed bar.")
+                    st.caption(f"{used} | last bar {std.index[-1]} | close {std['close'].iloc[-1]:.2f}")
+                else:
+                    row = tr.iloc[0]
+                    side = int(row["side"])
+
+                    # Ensure the trade is on the last completed bar
+                    last_bar_ts = std.index[-1]
+                    trade_ts = pd.to_datetime(str(row["time_open"]))
+                    if trade_ts != last_bar_ts:
+                        st.write(f"No new trade on last bar (last signal was {trade_ts}, last bar is {last_bar_ts}).")
+                        st.caption(f"{used} | last bar close {std['close'].iloc[-1]:.2f}")
+                    else:
+                        # Use EXACT values the backtest used (parity). Fallback to standardized close.
+                        entry = float(row.get("entry_price", None) or std["close"].iloc[-1])
+
+                        # stop distance from backtest; if missing, rebuild via ATR
+                        stop_dist = float(row.get("stop_dist_used", 0.0))
+                        if not stop_dist:
+                            atr_val = float(row.get("atr_used", 0.0)) or _last_atr(df_live)
+                            stop_dist = atr_val * float(atr_mult)
+
+                        if side == 1:  # long
+                            sl = entry - stop_dist
+                            tp = entry + stop_dist * float(tp_r_multiple)
+                            dir_txt = "LONG"
+                        else:          # short
+                            sl = entry + stop_dist
+                            tp = entry - stop_dist * float(tp_r_multiple)
+                            dir_txt = "SHORT"
+
+                        # OANDA uses integer units
+                        units_rounded = int(round(float(row["units"])))
+                        lots = _units_to_lots(symbol, units_rounded)
+
+                        # de-dupe by bar time
+                        last_ts_sent = st.session_state.get("last_signal_ts")
+                        is_new_bar = (str(last_bar_ts) != str(last_ts_sent))
+                        st.session_state["last_signal_ts"] = str(last_bar_ts)
+
+                        msg = (f"[Signal] {symbol} {interval} | {dir_txt} {units_rounded}u (~{lots:.2f} lots) "
+                               f"@ {entry:.2f}  SL {sl:.2f}  TP {tp:.2f}  "
+                               f"(R={tp_r_multiple:.2f}, p_up={row['p_up']:.2f})")
+
+                        st.code(msg)
+                        if is_new_bar:
+                            if slack_url: send_slack(slack_url, msg)
+                            if discord_url: send_discord(discord_url, msg)
+            except Exception as e:
+                st.error(f"Live stream failed: {e}")
+                st.code(traceback.format_exc())
+
+    # ===== Debug =====
+    with tabs[6]:
+        st.subheader("Debug Info")
+        st.write({
+            "source": source, "symbol": symbol, "interval": interval,
+            "threshold": threshold,
+            "epsilon_start": eps_start, "epsilon_final": eps_final, "epsilon_decay_trades": eps_decay_trades,
+            "trade_start_date": trade_start, "warmup_bars": min_samples,
+            "risk_per_trade(%)": risk_per_trade_pct, "atr_mult": atr_mult,
+            "spread_pips": spread_pips, "slippage_pips": slippage_pips, "commission": commission,
+            "gate_killzones": gate_kz, "persist_model": persist_model,
+            "daily_cap%": daily_loss_pct, "overall_cap%": overall_loss_pct,
+            "stop_target_on": stop_target_on, "stop_target_pct%": (stop_target_pct * 100.0 if stop_target_pct else None),
+        })
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,16 @@
+# Copy to config.toml and edit as needed
+[general]
+symbol = "EURUSD=X"
+interval = "1h"
+start = "2023-01-01"
+end = ""
+
+[model]
+threshold = 0.55
+epsilon = 0.1
+min_samples_before_trade = 200
+
+[risk]
+starting_cash = 10000.0
+risk_per_trade = 0.005  # 0.5% per trade (used for position size calc in paper mode)
+kill_switch_dd = 0.1    # 10% max drawdown
