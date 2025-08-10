@@ -1,8 +1,9 @@
+# ruff: noqa: E741
 # app/backtest.py
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 import numpy as np
 import pandas as pd
 

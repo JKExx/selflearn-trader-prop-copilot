@@ -1,30 +1,26 @@
-# app/ui/st_app.py
 from __future__ import annotations
 
 import os
 import json
 import pathlib
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 
-# ------------------------------------------------------------------
-# Streamlit compatibility: rerun wrapper (new: st.rerun, old: experimental_rerun)
+# internal imports at top (fixes Ruff E402)
+from ..backtest import run_backtest, _std_ohlcv as _std_ohlcv_bt
+from ..analysis.metrics import compute_metrics
+from ..analysis.prop_eval import PropConfig, evaluate_prop
+
 def _rerun():
     if hasattr(st, "rerun"):
         st.rerun()
     elif hasattr(st, "experimental_rerun"):
         st.experimental_rerun()
-# ------------------------------------------------------------------
-
-# Use the standardizer from backtest so column names never bite us
-from ..backtest import run_backtest, _std_ohlcv as _std_ohlcv_bt
-from ..analysis.metrics import compute_metrics
-from ..analysis.prop_eval import PropConfig, evaluate_prop
 
 def _last_atr(df: pd.DataFrame, period: int = 14) -> float:
     std = _std_ohlcv_bt(df)
@@ -36,9 +32,8 @@ def _last_atr(df: pd.DataFrame, period: int = 14) -> float:
     atr = tr.rolling(period, min_periods=1).mean()
     return float(atr.iloc[-1])
 
-# ---------------- Data fetchers ----------------
+# Data fetchers
 try:
-    # Yahoo kept only as a fallback; OANDA is preferred for FX/metals
     from ..dataio.yf import get_ohlcv as yf_get
 except Exception:
     yf_get = None
@@ -62,9 +57,7 @@ except Exception:
     def send_slack(*a, **k): return False
     def send_discord(*a, **k): return False
 
-
 def _bootstrap_secrets():
-    """Load OANDA token/env from ~/.selflearntrader/secrets.toml if present."""
     try:
         p = pathlib.Path.home() / ".selflearntrader" / "secrets.toml"
         if p.exists():
@@ -78,16 +71,11 @@ def _bootstrap_secrets():
 
 _bootstrap_secrets()
 
-# ================= Preset application (deferred) =================
+# ===== Preset (deferred) =====
 def _apply_pending_preset_if_any():
-    """
-    Apply a preset BEFORE widgets are created to avoid:
-    'st.session_state.<key> cannot be modified after the widget with key <key> is instantiated.'
-    """
     data = st.session_state.get("_pending_preset")
     if not data:
         return
-
     mapping = {
         "risk_per_trade": "risk_per_trade_pct",
         "atr_multiple": "atr_mult",
@@ -95,49 +83,38 @@ def _apply_pending_preset_if_any():
         "overall_cap_pct": "overall_loss_pct",
         "stop_at_profit_target_pct": "stop_target_pct",
     }
-
     for k, v in data.items():
-        map_key = mapping.get(k, k)
-        if map_key == "risk_per_trade_pct":
-            st.session_state[map_key] = float(v) * 100.0
-        elif map_key in ("daily_loss_pct", "overall_loss_pct", "stop_target_pct"):
-            st.session_state[map_key] = float(v) * 100.0 if v is not None else st.session_state.get(map_key, None)
+        mk = mapping.get(k, k)
+        if mk == "risk_per_trade_pct":
+            st.session_state[mk] = float(v) * 100.0
+        elif mk in ("daily_loss_pct", "overall_loss_pct", "stop_target_pct"):
+            st.session_state[mk] = float(v) * 100.0 if v is not None else st.session_state.get(mk)
         else:
-            st.session_state[map_key] = v
-
-    # one-shot
+            st.session_state[mk] = v
     del st.session_state["_pending_preset"]
 
-# >>> Apply pending preset here, BEFORE any widgets are built
 _apply_pending_preset_if_any()
 
-# ================= Helpers =================
-
+# ===== Helpers =====
 def _fetch_data(source: str, symbol: str, interval: str, start: str, end: str | None):
-    """Fetch OHLCV for given source. OANDA preferred."""
     if source == "OANDA":
         if not HAVE_OANDA:
             raise RuntimeError("OANDA selected but module/env missing.")
         ins = _to_oanda_instrument(symbol)
         df = get_ohlcv_oanda(symbol=ins, interval=interval, start=start, end=end if end else None)
         return df, f"OANDA {ins} {interval}"
-
     if source == "Yahoo":
         if yf_get is None:
             raise RuntimeError("Yahoo fetcher not available in this build.")
         df = yf_get(symbol=symbol, interval=interval, start=start, end=end if end else None)
         return df, f"Yahoo {symbol} {interval}"
-
     raise ValueError(f"Unknown source: {source}")
 
-
 def _units_to_lots(instrument: str, units: int) -> float:
-    """Pretty-print lots for certain instruments (OANDA still uses integer units for orders)."""
     ins = (instrument or "").upper()
     if ins.startswith("XAU"):
-        return units / 100.0  # 100 oz ~ 1 std lot
+        return units / 100.0
     return float(units)
-
 
 def main():
     st.set_page_config(page_title="SelfLearn Trader — Prop-ready", layout="wide")
@@ -190,8 +167,8 @@ def main():
             news_on = st.checkbox("Enable news blackout", value=st.session_state.get("news_on", False), key="news_on")
             ics_url = st.text_input("ICS / calendar URL", value=st.session_state.get("ics_url", ""), key="ics_url", placeholder="webcal:// or https:// …")
             kws_default = st.session_state.get("news_keywords", "USD;High;FOMC;CPI;NFP")
-            kws = st.text_input("Keywords (semicolon separated)", value=kws_default, key="news_keywords")
-            news_window = st.slider("Blackout ± minutes", min_value=0, max_value=15, value=st.session_state.get("news_window", 2), key="news_window")
+            st.text_input("Keywords (semicolon separated)", value=kws_default, key="news_keywords")
+            st.slider("Blackout ± minutes", min_value=0, max_value=15, value=st.session_state.get("news_window", 2), key="news_window")
             news_events = []
             if news_on and ics_url and st.button("Test fetch ICS"):
                 if fetch_ics is None:
@@ -205,7 +182,6 @@ def main():
                     except Exception as e:
                         st.error(f"{e}")
 
-        # ---- Guardrails (Advanced) ----
         with st.expander("Advanced guardrails", expanded=False):
             col1, col2 = st.columns(2)
             with col1:
@@ -284,7 +260,6 @@ def main():
                 if selected:
                     try:
                         data = load_preset(selected)
-                        # Defer actual application until next run (before widgets)
                         st.session_state["_pending_preset"] = data
                         st.success(f"Applied preset '{selected}'. Reloading UI…")
                         _rerun()
@@ -303,7 +278,6 @@ def main():
                     df, used = _fetch_data(source, symbol, interval, start, end)
                     st.caption(f"Using {used} | Range: {df.index[0].date()} → {df.index[-1].date()} (UTC)")
 
-                    # News prep
                     news_events_to_pass = None
                     news_keywords_list = None
                     if st.session_state.get("news_on") and st.session_state.get("ics_url") and fetch_ics:
@@ -333,10 +307,8 @@ def main():
                         enforce_daily_cap=True, daily_cap_pct=float(st.session_state.get("daily_loss_pct", 4.5)) / 100.0,
                         day_boundary_tz="America/New_York", friday_cutoff_local=int(st.session_state.get("friday_cutoff_local", 22)),
                         stop_at_profit_target_pct=(float(st.session_state.get("stop_target_pct", 8.0)) / 100.0 if st.session_state.get("stop_target_on", True) else None),
-                        # news
                         news_events=news_events_to_pass, news_keywords=news_keywords_list,
                         news_blackout_minutes=int(st.session_state.get("news_window", 0)) if st.session_state.get("news_on") else 0,
-                        # guardrails
                         trailing_hwm_cap_pct=st.session_state.get("trailing_hwm_cap_pct") if st.session_state.get("trailing_hwm_enabled", True) else None,
                         max_trades_per_day=int(st.session_state.get("max_trades_per_day") or 0) or None,
                         loss_streak_pause_bars=int(st.session_state.get("loss_streak_pause_bars", 4)),
@@ -390,7 +362,10 @@ def main():
                              "profit_factor": (float("inf") if pf == float("inf") else float(pf))})
             sweep = pd.DataFrame(rows)
             st.dataframe(sweep, use_container_width=True)
-            fig = plt.figure(); plt.plot(sweep["threshold"], sweep["total_pnl"]); plt.xlabel("Threshold"); plt.ylabel("Total PnL")
+            fig = plt.figure()
+            plt.plot(sweep["threshold"], sweep["total_pnl"])
+            plt.xlabel("Threshold")
+            plt.ylabel("Total PnL")
             st.pyplot(fig)
 
     # ===== Trades =====
@@ -422,7 +397,8 @@ def main():
             )
             board, daily, violations = evaluate_prop(tr, pcfg, news_df=news_df)
             left, right = st.columns([1, 1])
-            with left: st.json(board)
+            with left:
+                st.json(board)
             with right:
                 if not daily.empty:
                     st.dataframe(daily[["prop_day", "day_min_dd_pct", "breached_daily"]], use_container_width=True)
@@ -434,7 +410,7 @@ def main():
         discord_url = st.text_input("Discord webhook URL (optional)", value=st.session_state.get("discord_url", ""))
 
         parity_mode = st.checkbox("Backtest parity mode (use exact params/ATR)", value=True)
-        tp_r_multiple = st.number_input("TP multiple (R)", 0.1, 5.0, 1.0, 0.1)
+        st.session_state["tp_r_multiple"] = st.number_input("TP multiple (R)", 0.1, 5.0, 1.0, 0.1)
 
         colL, colR = st.columns([1, 1])
         running = st.session_state.get("live_running", False)
@@ -447,17 +423,15 @@ def main():
                 st.session_state["live_running"] = False
                 _rerun()
 
-        # optional auto-refresh (requires streamlit-autorefresh)
         try:
             if st.session_state.get("live_running", False):
                 from streamlit_autorefresh import st_autorefresh
-                st_autorefresh(interval=60_000, key="live_refresh")  # 60s
+                st_autorefresh(interval=60_000, key="live_refresh")
         except Exception:
             pass
 
         if st.session_state.get("live_running", False):
             try:
-                # Use the sidebar Data start to now for parity
                 end_d = datetime.utcnow().strftime("%Y-%m-%d")
                 start_d = start
                 live_source = "OANDA" if HAVE_OANDA else source
@@ -467,7 +441,6 @@ def main():
                     st.warning("No live data returned (market closed or token/range issue).")
                     st.stop()
 
-                # --- Stale-data guard (don’t emit when market is closed / feed old) ---
                 std = _std_ohlcv_bt(df_live)
                 last_ts = std.index[-1]
                 now = pd.Timestamp.now(tz="UTC")
@@ -476,7 +449,6 @@ def main():
                     st.info(f"Data looks stale (last bar {last_ts}, now {now}). Market likely closed.")
                     st.stop()
 
-                # Freeze randomness unless parity_mode is False (then user epsilon applies)
                 eps_start_live = st.session_state.get("eps_start", 0.03) if parity_mode else 0.0
                 eps_final_live = st.session_state.get("eps_final", 0.00) if parity_mode else 0.0
                 eps_decay_live = int(st.session_state.get("eps_decay_trades", 75)) if parity_mode else 0
@@ -501,7 +473,6 @@ def main():
                     enforce_daily_cap=True, daily_cap_pct=float(st.session_state.get("daily_loss_pct", 4.5)) / 100.0,
                     day_boundary_tz="America/New_York", friday_cutoff_local=int(st.session_state.get("friday_cutoff_local", 22)),
                     stop_at_profit_target_pct=(float(st.session_state.get("stop_target_pct", 8.0)) / 100.0 if st.session_state.get("stop_target_on", True) else None),
-                    # guardrails
                     trailing_hwm_cap_pct=st.session_state.get("trailing_hwm_cap_pct") if st.session_state.get("trailing_hwm_enabled", True) else None,
                     max_trades_per_day=int(st.session_state.get("max_trades_per_day") or 0) or None,
                     loss_streak_pause_bars=int(st.session_state.get("loss_streak_pause_bars", 4)),
@@ -520,7 +491,6 @@ def main():
                     row = tr.iloc[0]
                     side = int(row["side"])
 
-                    # Ensure the trade is on the last completed bar
                     last_bar_ts = std.index[-1]
                     trade_ts = pd.to_datetime(str(row["time_open"]))
                     if trade_ts != last_bar_ts:
@@ -534,11 +504,11 @@ def main():
                             atr_val = float(row.get("atr_used", 0.0)) or _last_atr(df_live)
                             stop_dist = atr_val * float(st.session_state.get("atr_mult", 1.0))
 
-                        if side == 1:  # long
+                        if side == 1:
                             sl = entry - stop_dist
                             tp = entry + stop_dist * float(st.session_state.get("tp_r_multiple", 1.0))
                             dir_txt = "LONG"
-                        else:          # short
+                        else:
                             sl = entry + stop_dist
                             tp = entry - stop_dist * float(st.session_state.get("tp_r_multiple", 1.0))
                             dir_txt = "SHORT"
@@ -556,8 +526,10 @@ def main():
 
                         st.code(msg)
                         if is_new_bar:
-                            if slack_url: send_slack(slack_url, msg)
-                            if discord_url: send_discord(discord_url, msg)
+                            if slack_url:
+                                send_slack(slack_url, msg)
+                            if discord_url:
+                                send_discord(discord_url, msg)
             except Exception as e:
                 st.error(f"Live stream failed: {e}")
                 st.code(traceback.format_exc())
@@ -576,7 +548,6 @@ def main():
             "daily_cap%": st.session_state.get("daily_loss_pct"), "overall_cap%": st.session_state.get("overall_loss_pct"),
             "stop_target_on": st.session_state.get("stop_target_on"), "stop_target_pct%": st.session_state.get("stop_target_pct"),
         })
-
 
 if __name__ == "__main__":
     main()
