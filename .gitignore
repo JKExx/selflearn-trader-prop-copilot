@@ -21,3 +21,4 @@ presets/
 
 # Streamlit
 .streamlit/secrets.toml
+.DS_Store
