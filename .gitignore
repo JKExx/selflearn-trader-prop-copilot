@@ -1,0 +1,23 @@
+# OS cruft
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# venv
+.venv/
+venv/
+
+# Local state / outputs
+models_ckpt/
+presets/
+*.csv
+*.db
+*.sqlite
+*.log
+
+# Streamlit
+.streamlit/secrets.toml
