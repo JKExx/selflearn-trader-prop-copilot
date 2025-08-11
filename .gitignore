@@ -22,3 +22,14 @@ presets/
 # Streamlit
 .streamlit/secrets.toml
 .DS_Store
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Envs & OS
+.venv/
+.env/
+.DS_Store
