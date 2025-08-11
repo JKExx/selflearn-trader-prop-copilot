@@ -38,8 +38,11 @@ except Exception:  # pragma: no cover
 try:
     from ..alerts import send_slack, send_discord
 except Exception:  # pragma: no cover
-    def send_slack(*a, **k): return False
-    def send_discord(*a, **k): return False
+    def send_slack(*a, **k) -> bool:  # type: ignore
+        return False
+
+    def send_discord(*a, **k) -> bool:  # type: ignore
+        return False
 
 
 # ===================== secrets/bootstrap =====================
@@ -52,6 +55,7 @@ def _bootstrap_secrets():
     with contextlib.suppress(Exception):
         if SECRETS_HOME.exists():
             import toml
+
             s = toml.load(SECRETS_HOME)
             tok = s.get("OANDA_TOKEN", "")
             env = s.get("OANDA_ENV", "PRACTICE")
@@ -66,6 +70,7 @@ def _bootstrap_secrets():
         local = pathlib.Path("secrets.toml")
         if local.exists():
             import toml
+
             s = toml.load(local)
             tok = s.get("OANDA_TOKEN", "")
             env = s.get("OANDA_ENV", "PRACTICE")
@@ -167,6 +172,16 @@ def _fetch_data(source: str, symbol: str, interval: str, start: str, end: str | 
     raise ValueError(f"Unknown source: {source}")
 
 
+def _to_display_tz(ts, tz: str = "Europe/London"):
+    """Safely convert any timestamp/str to the display timezone; assume UTC if naive."""
+    if ts is None:
+        return None
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    return t.tz_convert(tz)
+
+
 # -------- OANDA env helpers for smart tester --------
 def _oanda_base(env: str) -> str:
     env = (env or "PRACTICE").upper()
@@ -186,7 +201,7 @@ def _try_oanda_ping(env: str, token: str, instrument: str = "XAU_USD", interval:
         df = get_ohlcv_oanda(
             symbol=_to_oanda_instrument(instrument),
             interval=interval,
-            count=rows
+            count=rows,
         )
         if df is None or df.empty:
             return 0, None, _oanda_base(env), None
@@ -278,6 +293,32 @@ def main():
         start = st.text_input("Data start (UTC)", value=st.session_state.get("start", "2025-01-01"), key="start")
         end = st.text_input("Data end (optional)", value=st.session_state.get("end", ""), key="end")
 
+        # ---- Display (timezone) ----
+        st.header("Display")
+
+        curr_tz = st.session_state.get("display_tz", "Europe/London")
+        colT1, colT2, colT3, colT4 = st.columns([1, 1, 1, 2])
+
+        def _set_tz_and_rerun(tz: str):
+            st.session_state["display_tz"] = tz
+            os.environ["DISPLAY_TZ"] = tz
+            _rerun()
+
+        with colT1:
+            if st.button("🇬🇧 UK"):
+                _set_tz_and_rerun("Europe/London")
+        with colT2:
+            if st.button("UTC"):
+                _set_tz_and_rerun("UTC")
+        with colT3:
+            if st.button("🇺🇸 NY"):
+                _set_tz_and_rerun("America/New_York")
+        with colT4:
+            custom_tz = st.text_input("Custom TZ (IANA)", value=curr_tz, key="custom_tz")
+            if st.button("Apply TZ"):
+                _set_tz_and_rerun(custom_tz or "Europe/London")
+        st.caption(f"Showing times in: **{st.session_state.get('display_tz', 'Europe/London')}** (calcs remain UTC)")
+
         # ----- Decision & Learning -----
         st.header("Decision & Learning")
         threshold = st.slider("Decision threshold", 0.50, 0.75, st.session_state.get("threshold", 0.69), 0.01, key="threshold")
@@ -367,8 +408,11 @@ def main():
         with colP1:
             if st.button("💾 Save preset"):
                 payload = {
-                    "symbol": symbol, "interval": interval, "threshold": float(threshold),
-                    "epsilon_start": float(eps_start), "epsilon_final": float(eps_final),
+                    "symbol": symbol,
+                    "interval": interval,
+                    "threshold": float(threshold),
+                    "epsilon_start": float(eps_start),
+                    "epsilon_final": float(eps_final),
                     "epsilon_decay_trades": int(eps_decay_trades),
                     "warmup_bars": int(min_samples),
                     "trade_start_date": trade_start,
@@ -380,8 +424,10 @@ def main():
                     "commission_per_trade": float(commission),
                     "gate_killzones": bool(gate_kz),
                     "persist_model": bool(persist_model),
-                    "enforce_daily_cap": True, "daily_cap_pct": float(daily_loss_pct / 100.0),
-                    "enforce_overall_cap": True, "overall_cap_pct": float(overall_loss_pct / 100.0),
+                    "enforce_daily_cap": True,
+                    "daily_cap_pct": float(daily_loss_pct / 100.0),
+                    "enforce_overall_cap": True,
+                    "overall_cap_pct": float(overall_loss_pct / 100.0),
                     "friday_cutoff_local": int(friday_cutoff_local),
                     "stop_at_profit_target_pct": (float(stop_target_pct) if stop_target_pct is not None else None),
                     # news
@@ -418,7 +464,7 @@ def main():
     # Keep as floats
     risk_per_trade = st.session_state.get("risk_per_trade_pct", 1.0) / 100.0
 
-    # baseline editable BEFORE Start
+    # baseline editable BEFORE Start (no local var to keep ruff happy)
     with st.sidebar:
         st.date_input(
             "Compliance baseline (start date)",
@@ -447,7 +493,8 @@ def main():
 
                     res = run_backtest(
                         df,
-                        symbol=symbol, interval=interval,
+                        symbol=symbol,
+                        interval=interval,
                         threshold=st.session_state.get("threshold", 0.69),
                         epsilon_start=st.session_state.get("eps_start", 0.03),
                         epsilon_final=st.session_state.get("eps_final", 0.00),
@@ -455,28 +502,49 @@ def main():
                         warmup_bars=int(st.session_state.get("min_samples", 1000)),
                         trade_start_date=st.session_state.get("trade_start") or None,
                         starting_cash=float(st.session_state.get("starting_cash", 10_000.0)),
-                        risk_per_trade=risk_per_trade, atr_multiple=float(st.session_state.get("atr_mult", 1.0)),
+                        risk_per_trade=risk_per_trade,
+                        atr_multiple=float(st.session_state.get("atr_mult", 1.0)),
                         spread_pips=float(st.session_state.get("spread_pips", 0.2)),
                         slippage_pips=float(st.session_state.get("slippage_pips", 0.1)),
                         commission_per_trade=float(st.session_state.get("commission", 0.0)),
                         gate_killzones=bool(st.session_state.get("gate_kz", True)),
                         persist_model=bool(st.session_state.get("persist_model", False)),
-                        enforce_overall_cap=True, overall_cap_pct=float(st.session_state.get("overall_loss_pct", 10.0)) / 100.0,
-                        enforce_daily_cap=True, daily_cap_pct=float(st.session_state.get("daily_loss_pct", 4.5)) / 100.0,
-                        day_boundary_tz="America/New_York", friday_cutoff_local=int(st.session_state.get("friday_cutoff_local", 22)),
-                        stop_at_profit_target_pct=(float(st.session_state.get("stop_target_pct", 8.0)) / 100.0 if st.session_state.get("stop_target_on", True) else None),
+                        enforce_overall_cap=True,
+                        overall_cap_pct=float(st.session_state.get("overall_loss_pct", 10.0)) / 100.0,
+                        enforce_daily_cap=True,
+                        daily_cap_pct=float(st.session_state.get("daily_loss_pct", 4.5)) / 100.0,
+                        day_boundary_tz="America/New_York",
+                        friday_cutoff_local=int(st.session_state.get("friday_cutoff_local", 22)),
+                        stop_at_profit_target_pct=(
+                            float(st.session_state.get("stop_target_pct", 8.0)) / 100.0
+                            if st.session_state.get("stop_target_on", True)
+                            else None
+                        ),
                         # news
-                        news_events=news_events_to_pass, news_keywords=news_keywords_list,
-                        news_blackout_minutes=int(st.session_state.get("news_window", 0)) if st.session_state.get("news_on") else 0,
+                        news_events=news_events_to_pass,
+                        news_keywords=news_keywords_list,
+                        news_blackout_minutes=int(st.session_state.get("news_window", 0))
+                        if st.session_state.get("news_on")
+                        else 0,
                         # guardrails
-                        trailing_hwm_cap_pct=st.session_state.get("trailing_hwm_cap_pct") if st.session_state.get("trailing_hwm_enabled", True) else None,
+                        trailing_hwm_cap_pct=st.session_state.get("trailing_hwm_cap_pct")
+                        if st.session_state.get("trailing_hwm_enabled", True)
+                        else None,
                         max_trades_per_day=int(st.session_state.get("max_trades_per_day") or 0) or None,
                         loss_streak_pause_bars=int(st.session_state.get("loss_streak_pause_bars", 4)),
                         loss_streak_trigger=int(st.session_state.get("loss_streak_trigger", 2)),
-                        dd_adapt_threshold_pct=st.session_state.get("dd_adapt_threshold_pct") if st.session_state.get("dd_adapt_enabled", True) else None,
-                        dd_adapt_risk=st.session_state.get("dd_adapt_risk") if st.session_state.get("dd_adapt_enabled", True) else None,
-                        dd_adapt_threshold_bump=st.session_state.get("dd_adapt_threshold_bump", 0.0) if st.session_state.get("dd_adapt_enabled", True) else 0.0,
-                        max_intraday_dd_from_high_pct=st.session_state.get("max_intraday_dd_from_high_pct") if st.session_state.get("intraday_dd_enabled", True) else None,
+                        dd_adapt_threshold_pct=st.session_state.get("dd_adapt_threshold_pct")
+                        if st.session_state.get("dd_adapt_enabled", True)
+                        else None,
+                        dd_adapt_risk=st.session_state.get("dd_adapt_risk")
+                        if st.session_state.get("dd_adapt_enabled", True)
+                        else None,
+                        dd_adapt_threshold_bump=st.session_state.get("dd_adapt_threshold_bump", 0.0)
+                        if st.session_state.get("dd_adapt_enabled", True)
+                        else 0.0,
+                        max_intraday_dd_from_high_pct=st.session_state.get("max_intraday_dd_from_high_pct")
+                        if st.session_state.get("intraday_dd_enabled", True)
+                        else None,
                     )
 
                 st.session_state["last_result"] = res
@@ -536,8 +604,14 @@ def main():
                 wins = sub["pnl"][sub["pnl"] > 0].sum()
                 losses = sub["pnl"][sub["pnl"] < 0].sum()
                 pf = (wins / abs(losses)) if float(losses) != 0 else float("inf")
-                rows.append({"threshold": float(t), "trades": int(len(sub)), "total_pnl": float(sub["pnl"].sum()),
-                             "profit_factor": (float("inf") if pf == float("inf") else float(pf))})
+                rows.append(
+                    {
+                        "threshold": float(t),
+                        "trades": int(len(sub)),
+                        "total_pnl": float(sub["pnl"].sum()),
+                        "profit_factor": (float("inf") if pf == float("inf") else float(pf)),
+                    }
+                )
             sweep = pd.DataFrame(rows)
             st.dataframe(sweep, use_container_width=True)
             fig = plt.figure()
@@ -614,7 +688,8 @@ def main():
                     df_live = get_ohlcv_oanda(
                         symbol=_to_oanda_instrument(symbol),
                         interval=interval,
-                        start=None, end=None,
+                        start=None,
+                        end=None,
                         count=5000,
                     )
                     used = f"OANDA {_to_oanda_instrument(symbol)} {interval}"
@@ -637,13 +712,19 @@ def main():
 
                 delay_min = float((expected_last - last_ts) / pd.Timedelta(minutes=1))
 
+                disp_tz = st.session_state.get("display_tz", "Europe/London")
+                now_local = _to_display_tz(now, disp_tz)
+                last_local = _to_display_tz(last_ts, disp_tz)
+                expected_local = _to_display_tz(expected_last, disp_tz)
+
                 # Heartbeat + dynamic auto-refresh
                 st.caption(
-                    f"data_used={used} last_ts={last_ts} expected_last={expected_last} "
-                    f"now={now} delay_min={delay_min:.1f}"
+                    f"data_used={used} last_ts={last_local} expected_last={expected_local} "
+                    f"now={now_local} delay_min={delay_min:.1f}"
                 )
                 try:
                     from streamlit_autorefresh import st_autorefresh
+
                     next_open = now.floor(f"{bar_minutes}min") + pd.Timedelta(minutes=bar_minutes)
                     sec_to_next = max(1, int((next_open - now).total_seconds()))
                     refresh_ms = int(min(120_000, max(5_000, (sec_to_next + 2) * 1000)))
@@ -657,10 +738,12 @@ def main():
 
                 lag_threshold = max(5, bar_minutes * 0.5)
                 if delay_min > lag_threshold:
-                    st.info(f"Data looks stale (last={last_ts}, expected={expected_last}). Market closed or provider lag.")
+                    st.info(
+                        f"Data looks stale (last={last_local}, expected={expected_local}). "
+                        f"Market closed or provider lag."
+                    )
                     st.stop()
 
-                # live params (parity vs adaptive)
                 # live params (parity vs adaptive)
                 if parity_mode:
                     eps_start_live = 0.0
@@ -676,9 +759,12 @@ def main():
                 # soft stops in live (simulate last closed bar)
                 res = run_backtest(
                     df_live,
-                    symbol=symbol, interval=interval,
+                    symbol=symbol,
+                    interval=interval,
                     threshold=st.session_state.get("threshold", 0.69),
-                    epsilon_start=eps_start_live, epsilon_final=eps_final_live, epsilon_decay_trades=eps_decay_live,
+                    epsilon_start=eps_start_live,
+                    epsilon_final=eps_final_live,
+                    epsilon_decay_trades=eps_decay_live,
                     warmup_bars=int(st.session_state.get("min_samples", 1000)),
                     trade_start_date=st.session_state.get("trade_start") or None,
                     starting_cash=float(st.session_state.get("starting_cash", 10_000.0)),
@@ -698,14 +784,20 @@ def main():
                     friday_cutoff_local=int(st.session_state.get("friday_cutoff_local", 22)),
                 )
 
-                # debug context
+                # debug context (display in chosen tz)
                 warmup = int(st.session_state.get("min_samples", 1000))
-                first_tradable = (std.index[warmup] if len(std) > warmup else None)
-                last_trade_time = (pd.to_datetime(res.trades["time_open"].iloc[-1])
-                                   if hasattr(res, "trades") and not res.trades.empty else None)
-                st.caption(f"live bars={len(std)} warmup={warmup} first_tradable={first_tradable} last_trade_time={last_trade_time} stop_reason={getattr(res, 'stop_reason', None)}")
+                first_tradable = _to_display_tz(std.index[warmup], disp_tz) if len(std) > warmup else None
+                last_trade_time = (
+                    _to_display_tz(pd.to_datetime(res.trades["time_open"].iloc[-1]), disp_tz)
+                    if hasattr(res, "trades") and not res.trades.empty
+                    else None
+                )
+                st.caption(
+                    f"live bars={len(std)} warmup={warmup} first_tradable={first_tradable} "
+                    f"last_trade_time={last_trade_time} stop_reason={getattr(res, 'stop_reason', None)}"
+                )
 
-                # compliance (soft evaluation)
+                # compliance (soft evaluation) — rules still NY-based
                 pcfg = PropConfig(
                     daily_loss_pct=float(st.session_state.get("daily_loss_pct", 4.5)),
                     overall_loss_pct=float(st.session_state.get("overall_loss_pct", 10.0)),
@@ -723,7 +815,10 @@ def main():
                 locked_today = bool(row_today["breached_daily"].iloc[0]) if not row_today.empty else False
                 overall_breached = bool(board.get("breaches_overall", 0))
                 max_dd = float(board.get("max_drawdown_pct", 0.0))
-                st.caption(f"compliance: locked_today={locked_today} overall_breached={overall_breached} max_dd={max_dd:.2f}%")
+                st.caption(
+                    f"compliance: locked_today={locked_today} overall_breached={overall_breached} "
+                    f"max_dd={max_dd:.2f}% | shown in {disp_tz}"
+                )
 
                 require_ok = st.checkbox("Require compliance to signal", value=False)
                 if require_ok and (overall_breached or locked_today):
@@ -734,10 +829,10 @@ def main():
                 tr_last = res.trades.tail(1)
                 if tr_last.empty or int(tr_last.iloc[0]["side"]) == 0:
                     last_close = std["close"].iloc[-1]
+                    last_sig_local = last_trade_time if last_trade_time else "—"
                     st.write(
                         "No new trade on last completed bar "
-                        f"(last signal was {last_trade_time if last_trade_time else '—'}, "
-                        f"last completed bar is {last_ts})."
+                        f"(last signal was {last_sig_local}, last completed bar is {last_local})."
                     )
                     st.caption(f"{used} | last bar close {last_close:.2f}")
                 else:
@@ -746,7 +841,10 @@ def main():
                     last_bar_ts = std.index[-1]
                     trade_ts = pd.to_datetime(str(row["time_open"]))
                     if trade_ts != last_bar_ts:
-                        st.write(f"No new trade on last bar (last signal was {trade_ts}, last bar is {last_bar_ts}).")
+                        st.write(
+                            f"No new trade on last bar (last signal was {_to_display_tz(trade_ts, disp_tz)}, "
+                            f"last bar is {_to_display_tz(last_bar_ts, disp_tz)})."
+                        )
                         st.caption(f"{used} | last bar close {std['close'].iloc[-1]:.2f}")
                     else:
                         entry = float(row.get("entry_price", None) or std["close"].iloc[-1])
@@ -769,11 +867,13 @@ def main():
                         lots = _units_to_lots(symbol, units_rounded)
 
                         last_ts_sent = st.session_state.get("last_signal_ts")
-                        is_new_bar = (str(last_bar_ts) != str(last_ts_sent))
+                        is_new_bar = str(last_bar_ts) != str(last_ts_sent)
                         st.session_state["last_signal_ts"] = str(last_bar_ts)
 
-                        msg = (f"[Signal] {symbol} {interval} | {dir_txt} {units_rounded}u (~{lots:.2f} lots) "
-                               f"@ {entry:.2f}  SL {sl:.2f}  TP {tp:.2f}  (p_up={row['p_up']:.2f})")
+                        msg = (
+                            f"[Signal] {symbol} {interval} | {dir_txt} {units_rounded}u (~{lots:.2f} lots) "
+                            f"@ {entry:.2f}  SL {sl:.2f}  TP {tp:.2f}  (p_up={row['p_up']:.2f})"
+                        )
                         st.code(msg)
                         with st.expander("Last trade (raw)"):
                             st.json({k: (v.item() if hasattr(v, "item") else v) for k, v in row.to_dict().items()})
@@ -786,22 +886,35 @@ def main():
 
                             if log_on:
                                 rec = {
-                                    "symbol": symbol, "interval": interval,
-                                    "time_open": str(trade_ts.tz_convert("UTC")),
+                                    "symbol": symbol,
+                                    "interval": interval,
+                                    "time_open": str(pd.Timestamp(trade_ts).tz_convert("UTC")),
                                     "time_close": str(row.get("time_close", "")),
-                                    "side": side, "p_up": float(row.get("p_up", np.nan)),
-                                    "units": units_rounded, "lots": float(lots),
-                                    "entry_price": float(entry), "sl": float(sl), "tp": float(tp),
-                                    "atr_used": float(row.get("atr_used", np.nan)) if pd.notna(row.get("atr_used", np.nan)) else np.nan,
+                                    "side": side,
+                                    "p_up": float(row.get("p_up", np.nan)),
+                                    "units": units_rounded,
+                                    "lots": float(lots),
+                                    "entry_price": float(entry),
+                                    "sl": float(sl),
+                                    "tp": float(tp),
+                                    "atr_used": float(row.get("atr_used", np.nan))
+                                    if pd.notna(row.get("atr_used", np.nan))
+                                    else np.nan,
                                     "stop_dist_used": float(stop_dist),
-                                    "pnl": float(row.get("pnl", np.nan)) if pd.notna(row.get("pnl", np.nan)) else np.nan,
+                                    "pnl": float(row.get("pnl", np.nan))
+                                    if pd.notna(row.get("pnl", np.nan))
+                                    else np.nan,
                                 }
                                 df_one = pd.DataFrame([rec])
                                 _ensure_dir(log_dir)
                                 live_csv = os.path.join(log_dir, "live_trades.csv")
                                 _append_trades_csv(live_csv, df_one, ["symbol", "interval", "time_open"])
                                 day_tag = pd.Timestamp(trade_ts).tz_convert("UTC").strftime("%Y-%m-%d")
-                                _append_trades_csv(os.path.join(log_dir, f"live_trades_{day_tag}.csv"), df_one, ["symbol", "interval", "time_open"])
+                                _append_trades_csv(
+                                    os.path.join(log_dir, f"live_trades_{day_tag}.csv"),
+                                    df_one,
+                                    ["symbol", "interval", "time_open"],
+                                )
 
                 # live metrics since Start
                 with st.expander("Live run quick metrics (since Start)"):
@@ -834,18 +947,33 @@ def main():
     # ---------------- Debug ----------------
     with tabs[6]:
         st.subheader("Debug Info")
-        st.write({
-            "source": st.session_state.get("source"), "symbol": st.session_state.get("symbol"), "interval": st.session_state.get("interval"),
-            "threshold": st.session_state.get("threshold"),
-            "epsilon_start": st.session_state.get("eps_start"), "epsilon_final": st.session_state.get("eps_final"), "epsilon_decay_trades": st.session_state.get("eps_decay_trades"),
-            "trade_start_date": st.session_state.get("trade_start"), "warmup_bars": st.session_state.get("min_samples"),
-            "risk_per_trade(%)": st.session_state.get("risk_per_trade_pct"), "atr_mult": st.session_state.get("atr_mult"),
-            "spread_pips": st.session_state.get("spread_pips"), "slippage_pips": st.session_state.get("slippage_pips"), "commission": st.session_state.get("commission"),
-            "gate_killzones": st.session_state.get("gate_kz"), "persist_model": st.session_state.get("persist_model"),
-            "daily_cap%": st.session_state.get("daily_loss_pct"), "overall_cap%": st.session_state.get("overall_loss_pct"),
-            "stop_target_on": st.session_state.get("stop_target_on"), "stop_target_pct%": st.session_state.get("stop_target_pct"),
-            "OANDA_ENV": os.environ.get("OANDA_ENV"), "OANDA_TOKEN_set": bool(os.environ.get("OANDA_TOKEN")),
-        })
+        st.write(
+            {
+                "source": st.session_state.get("source"),
+                "symbol": st.session_state.get("symbol"),
+                "interval": st.session_state.get("interval"),
+                "threshold": st.session_state.get("threshold"),
+                "epsilon_start": st.session_state.get("eps_start"),
+                "epsilon_final": st.session_state.get("eps_final"),
+                "epsilon_decay_trades": st.session_state.get("eps_decay_trades"),
+                "trade_start_date": st.session_state.get("trade_start"),
+                "warmup_bars": st.session_state.get("min_samples"),
+                "risk_per_trade(%)": st.session_state.get("risk_per_trade_pct"),
+                "atr_mult": st.session_state.get("atr_mult"),
+                "spread_pips": st.session_state.get("spread_pips"),
+                "slippage_pips": st.session_state.get("slippage_pips"),
+                "commission": st.session_state.get("commission"),
+                "gate_killzones": st.session_state.get("gate_kz"),
+                "persist_model": st.session_state.get("persist_model"),
+                "daily_cap%": st.session_state.get("daily_loss_pct"),
+                "overall_cap%": st.session_state.get("overall_loss_pct"),
+                "stop_target_on": st.session_state.get("stop_target_on"),
+                "stop_target_pct%": st.session_state.get("stop_target_pct"),
+                "OANDA_ENV": os.environ.get("OANDA_ENV"),
+                "OANDA_TOKEN_set": bool(os.environ.get("OANDA_TOKEN")),
+                "DISPLAY_TZ": st.session_state.get("display_tz", "Europe/London"),
+            }
+        )
 
 
 if __name__ == "__main__":
