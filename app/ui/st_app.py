@@ -341,7 +341,11 @@ def main():
                     )
                 st.session_state["last_result"] = res
                 st.session_state["last_trades"] = res.trades.copy()
-                st.success(f"Backtest complete. Stop reason: {res.stop_reason or '—'}")
+                stop_reason = res.stop_reason or "end_of_data"
+                stop_ts = getattr(res, "stop_ts", None) or (df.index[-1] if len(df) else None)
+                st.success(f"Backtest complete. Stop reason: {stop_reason}")
+                if stop_ts is not None:
+                    st.caption(f"Stopped at: {stop_ts} UTC")
                 if not res.trades.empty:
                     fig = plt.figure()
                     plt.plot(res.equity_curve)
@@ -407,7 +411,6 @@ def main():
             st.info("Run a backtest first.")
         else:
             news_df = None
-            # NOTE: PropConfig expects percentages (e.g., 4.5, 10.0)
             pcfg = PropConfig(
                 daily_loss_pct=float(st.session_state.get("daily_loss_pct", 4.5)),
                 overall_loss_pct=float(st.session_state.get("overall_loss_pct", 10.0)),
@@ -474,14 +477,47 @@ def main():
                     st.warning("No live data returned (market closed or token/range issue).")
                     st.stop()
 
-                # stale-data guard
+                # --- smarter stale guard with one refetch ---
                 std = _std_ohlcv_bt(df_live)
                 last_ts = std.index[-1]
                 now = pd.Timestamp.now(tz="UTC")
                 bar_minutes = {"15m": 15, "30m": 30, "1h": 60, "1d": 1440}.get(interval, 60)
-                if (now - last_ts) > pd.Timedelta(minutes=bar_minutes * 1.5):
-                    st.info(f"Data looks stale (last bar {last_ts}, now {now}). Market likely closed.")
+
+                expected_last = now.floor(f"{bar_minutes}min")
+                if interval != "1d":
+                    expected_last -= pd.Timedelta(minutes=bar_minutes)
+
+                delay_min = float((expected_last - last_ts) / pd.Timedelta(minutes=1))
+
+                def _refetch_once():
+                    try:
+                        return get_ohlcv_oanda(
+                            symbol=_to_oanda_instrument(symbol),
+                            interval=interval,
+                            start=None, end=None,
+                            count=max(200, min(5000, len(std) + 100)),
+                        )
+                    except Exception:
+                        return None
+
+                lag_threshold = max(5, bar_minutes * 0.5)  # e.g., 30 min for 1h
+
+                if delay_min > lag_threshold:
+                    df_try = _refetch_once()
+                    if df_try is not None and not df_try.empty:
+                        std2 = _std_ohlcv_bt(df_try)
+                        if std2.index[-1] > last_ts:
+                            df_live = df_try
+                            std = std2
+                            last_ts = std.index[-1]
+                            delay_min = float((expected_last - last_ts) / pd.Timedelta(minutes=1))
+
+                st.caption(f"data_used={used} last_ts={last_ts} expected_last={expected_last} now={now} delay_min={delay_min:.1f}")
+
+                if delay_min > lag_threshold:
+                    st.info(f"Data looks stale (last bar {last_ts}, expected {expected_last}). Provider lag or market closed.")
                     st.stop()
+                # --- end stale guard ---
 
                 # parity mode = freeze randomness; otherwise use UI eps
                 if parity_mode:
@@ -534,7 +570,7 @@ def main():
                 )
                 # -------------------------------------------------------------------
 
-                # Compliance banner (soft evaluation)
+                # Compliance banner (soft evaluation) with baseline filter
                 pcfg = PropConfig(
                     daily_loss_pct=float(st.session_state.get("daily_loss_pct", 4.5)),
                     overall_loss_pct=float(st.session_state.get("overall_loss_pct", 10.0)),
@@ -544,12 +580,22 @@ def main():
                     news_blackout_mins=int(st.session_state.get("news_window", 0)) if st.session_state.get("news_on") else 0,
                     relevant_currencies=set(),
                 )
-                board, daily, _ = evaluate_prop(res.trades, pcfg, news_df=None)
+
+                baseline = st.date_input("Compliance baseline (start date)", pd.Timestamp.utcnow().date())
+                tr_eval = res.trades[pd.to_datetime(res.trades["time_close"]).dt.date >= baseline]
+                board, daily, _ = evaluate_prop(tr_eval, pcfg, news_df=None)
+
                 today_local = last_ts.tz_convert("America/New_York").strftime("%Y-%m-%d")
                 row_today = daily[daily["prop_day"] == today_local]
                 locked_today = bool(row_today["breached_daily"].iloc[0]) if not row_today.empty else False
                 overall_breached = bool(board.get("breaches_overall", 0))
-                st.caption(f"compliance: locked_today={locked_today} overall_breached={overall_breached}")
+                max_dd = float(board.get("max_drawdown_pct", 0.0))
+                st.caption(f"compliance: locked_today={locked_today} overall_breached={overall_breached} max_dd={max_dd:.2f}%")
+
+                require_ok = st.checkbox("Require compliance to signal", value=False)
+                if require_ok and (overall_breached or locked_today):
+                    st.warning("Compliance lock: signals suppressed (overall or daily breach).")
+                    st.stop()
 
                 # emit last-bar signal if any
                 tr = res.trades.tail(1)
@@ -594,11 +640,22 @@ def main():
                                f"(p_up={row['p_up']:.2f})")
 
                         st.code(msg)
+                        with st.expander("Last trade (raw)"):
+                            st.json({k: (v.item() if hasattr(v, "item") else v) for k, v in row.to_dict().items()})
+
                         if is_new_bar:
                             if slack_url:
                                 send_slack(slack_url, msg)
                             if discord_url:
                                 send_discord(discord_url, msg)
+
+                # quick live metrics panel
+                with st.expander("Live run quick metrics"):
+                    try:
+                        m = compute_metrics(res.trades)
+                        st.json(m)
+                    except Exception:
+                        pass
 
             except Exception as e:
                 st.error(f"Live stream failed: {e}")
