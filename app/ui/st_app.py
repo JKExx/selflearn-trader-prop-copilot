@@ -432,10 +432,20 @@ def main():
 
         if st.session_state.get("live_running", False):
             try:
-                end_d = datetime.utcnow().strftime("%Y-%m-%d")
-                start_d = start
                 live_source = "OANDA" if HAVE_OANDA else source
-                df_live, used = _fetch_data(live_source, symbol, interval, start_d, end_d)
+                if live_source == "OANDA":
+                    # Fetch latest candles by COUNT to avoid any 'to=midnight' truncation
+                    df_live = get_ohlcv_oanda(
+                        symbol=_to_oanda_instrument(symbol),
+                        interval=interval,
+                        start=None,
+                        end=None,
+                        count=1500,        # ~2 months of 1h bars; adjust if you want
+                    )
+                    used = f"OANDA {_to_oanda_instrument(symbol)} {interval}"
+                else:
+                    # For Yahoo, just don’t bound 'end' so we include the freshest bar
+                    df_live, used = _fetch_data(live_source, symbol, interval, start, None)
 
                 if df_live is None or df_live.empty:
                     st.warning("No live data returned (market closed or token/range issue).")
