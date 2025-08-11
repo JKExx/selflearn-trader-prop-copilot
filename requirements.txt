@@ -11,4 +11,6 @@ toml>=0.10
 streamlit-autorefresh>=1.0
 # OANDA (if your dataio uses it)
 oandapyV20>=0.7.2
+streamlit-autorefresh-1.0.1
+
 
