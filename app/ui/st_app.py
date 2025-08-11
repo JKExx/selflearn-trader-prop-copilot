@@ -420,7 +420,7 @@ def main():
 
     # baseline editable BEFORE Start
     with st.sidebar:
-        baseline = st.date_input(
+        st.date_input(
             "Compliance baseline (start date)",
             st.session_state.get("compliance_baseline", pd.Timestamp.utcnow().date()),
             key="compliance_baseline",
@@ -661,8 +661,11 @@ def main():
                     st.stop()
 
                 # live params (parity vs adaptive)
+                # live params (parity vs adaptive)
                 if parity_mode:
-                    eps_start_live = 0.0; eps_final_live = 0.0; eps_decay_live = 0
+                    eps_start_live = 0.0
+                    eps_final_live = 0.0
+                    eps_decay_live = 0
                     persist_live = st.session_state.get("persist_model", False)
                 else:
                     eps_start_live = st.session_state.get("eps_start", 0.03)
@@ -776,8 +779,10 @@ def main():
                             st.json({k: (v.item() if hasattr(v, "item") else v) for k, v in row.to_dict().items()})
 
                         if is_new_bar:
-                            if slack_url: send_slack(slack_url, msg)
-                            if discord_url: send_discord(discord_url, msg)
+                            if slack_url:
+                                send_slack(slack_url, msg)
+                            if discord_url:
+                                send_discord(discord_url, msg)
 
                             if log_on:
                                 rec = {
