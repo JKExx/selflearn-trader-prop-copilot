@@ -42,6 +42,7 @@ except Exception:
     def send_discord(*a, **k): return False
 
 
+# ----------------- small helpers -----------------
 def _rerun():
     if hasattr(st, "rerun"):
         st.rerun()
@@ -61,6 +62,48 @@ def _bootstrap_secrets():
             st.session_state.setdefault("OANDA_TOKEN", s.get("OANDA_TOKEN", ""))
     except Exception:
         pass
+
+
+def _ensure_dir(path: str):
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        pass
+
+
+def _append_trades_csv(csv_path: str, df_new: pd.DataFrame, subset_keys: list[str]):
+    """Append df_new into csv_path, de-duplicate by subset_keys, keep sorted by time_open."""
+    if df_new is None or df_new.empty:
+        return
+    _ensure_dir(os.path.dirname(csv_path) or ".")
+    try:
+        if os.path.exists(csv_path):
+            old = pd.read_csv(csv_path)
+            # normalize dtypes
+            for col in ["time_open", "time_close"]:
+                if col in old.columns:
+                    old[col] = pd.to_datetime(old[col], utc=True, errors="coerce").astype("datetime64[ns, UTC]").astype(str)
+            for col in ["time_open", "time_close"]:
+                if col in df_new.columns:
+                    df_new[col] = pd.to_datetime(df_new[col], utc=True, errors="coerce").astype("datetime64[ns, UTC]").astype(str)
+            all_df = pd.concat([old, df_new], ignore_index=True)
+        else:
+            all_df = df_new.copy()
+        all_df = all_df.drop_duplicates(subset=subset_keys, keep="last")
+        # sort if time_open exists
+        if "time_open" in all_df.columns:
+            all_df["time_open"] = pd.to_datetime(all_df["time_open"], utc=True, errors="coerce")
+            all_df = all_df.sort_values("time_open")
+        # keep the last 100k rows to avoid runaway file sizes
+        if len(all_df) > 100_000:
+            all_df = all_df.iloc[-100_000:]
+        # cast back to iso strings for portability
+        for col in ["time_open", "time_close"]:
+            if col in all_df.columns:
+                all_df[col] = pd.to_datetime(all_df[col], utc=True, errors="coerce").astype(str)
+        all_df.to_csv(csv_path, index=False)
+    except Exception as e:
+        st.warning(f"Trade log write failed: {e}")
 
 
 _bootstrap_secrets()
@@ -345,6 +388,18 @@ def main():
                 st.success(f"Backtest complete. Stop reason: {stop_reason}")
                 if stop_ts is not None:
                     st.caption(f"Stopped at: {stop_ts} UTC")
+
+                # 🔸 auto-save backtest trades
+                try:
+                    ts_tag = pd.Timestamp.utcnow().strftime("%Y%m%dT%H%M%SZ")
+                    out_dir = "logs/backtests"
+                    _ensure_dir(out_dir)
+                    out_path = os.path.join(out_dir, f"{ts_tag}_{symbol}_{interval}.csv")
+                    res.trades.to_csv(out_path, index=False)
+                    st.caption(f"Saved backtest trades → {out_path}")
+                except Exception as e:
+                    st.warning(f"Could not save backtest log: {e}")
+
                 if not res.trades.empty:
                     fig = plt.figure()
                     plt.plot(res.equity_curve)
@@ -437,11 +492,17 @@ def main():
         parity_mode = st.checkbox("Backtest parity mode (use exact params/ATR)", value=True)
         st.session_state["tp_r_multiple"] = st.number_input("TP multiple (R)", 0.1, 5.0, 1.0, 0.1)
 
+        # 🔸 NEW: logging controls
+        st.subheader("Live logging")
+        log_on = st.checkbox("Enable trade logging", value=True, key="live_log_on")
+        log_dir = st.text_input("Log directory", value=st.session_state.get("log_dir", "logs"), key="log_dir")
+
         colL, colR = st.columns([1, 1])
         running = st.session_state.get("live_running", False)
         with colL:
             if not running and st.button("▶️ Start"):
                 st.session_state["live_running"] = True
+                st.session_state["live_started_ts"] = pd.Timestamp.now(tz="UTC")
                 _rerun()
         with colR:
             if running and st.button("⏹ Stop"):
@@ -581,6 +642,7 @@ def main():
                 )
 
                 baseline = st.date_input("Compliance baseline (start date)", pd.Timestamp.utcnow().date())
+                st.session_state["compliance_baseline"] = baseline
                 tr_eval = res.trades[pd.to_datetime(res.trades["time_close"]).dt.date >= baseline]
                 board, daily, _ = evaluate_prop(tr_eval, pcfg, news_df=None)
 
@@ -596,7 +658,7 @@ def main():
                     st.warning("Compliance lock: signals suppressed (overall or daily breach).")
                     st.stop()
 
-                # emit last-bar signal if any
+                # ---- emit last-bar signal if any + LOG IT ----
                 tr = res.trades.tail(1)
                 if tr.empty or int(tr.iloc[0]["side"]) == 0:
                     st.write("No trade on last completed bar.")
@@ -648,13 +710,59 @@ def main():
                             if discord_url:
                                 send_discord(discord_url, msg)
 
-                # quick live metrics panel
-                with st.expander("Live run quick metrics"):
+                            # 🔸 LOG to CSV(s)
+                            if log_on:
+                                # build a single-row df with essentials + signal calc
+                                rec = {
+                                    "symbol": symbol,
+                                    "interval": interval,
+                                    "time_open": str(trade_ts.tz_convert("UTC")),
+                                    "time_close": str(row.get("time_close", "")),
+                                    "side": side,
+                                    "p_up": float(row.get("p_up", np.nan)),
+                                    "units": units_rounded,
+                                    "lots": float(lots),
+                                    "entry_price": float(entry),
+                                    "sl": float(sl),
+                                    "tp": float(tp),
+                                    "atr_used": float(row.get("atr_used", np.nan)) if pd.notna(row.get("atr_used", np.nan)) else np.nan,
+                                    "stop_dist_used": float(stop_dist),
+                                    "pnl": float(row.get("pnl", np.nan)) if pd.notna(row.get("pnl", np.nan)) else np.nan,
+                                }
+                                df_one = pd.DataFrame([rec])
+
+                                _ensure_dir(log_dir)
+                                live_csv = os.path.join(log_dir, "live_trades.csv")
+                                _append_trades_csv(live_csv, df_one, subset_keys=["symbol", "interval", "time_open"])
+
+                                # also roll a per-day file (UTC date)
+                                day_tag = pd.Timestamp(trade_ts).tz_convert("UTC").strftime("%Y-%m-%d")
+                                daily_csv = os.path.join(log_dir, f"live_trades_{day_tag}.csv")
+                                _append_trades_csv(daily_csv, df_one, subset_keys=["symbol", "interval", "time_open"])
+
+                # quick live metrics panel (since Start)
+                with st.expander("Live run quick metrics (since Start)"):
                     try:
-                        m = compute_metrics(res.trades)
-                        st.json(m)
+                        tr_all = res.trades.copy()
+                        tr_all["time_close"] = pd.to_datetime(tr_all["time_close"], utc=True)
+                        live_start = st.session_state.get("live_started_ts")
+                        tr_since_start = tr_all[tr_all["time_close"] >= live_start] if live_start else tr_all.iloc[0:0]
+                        st.json(compute_metrics(tr_since_start) if not tr_since_start.empty else {"trades": 0})
                     except Exception:
                         pass
+
+                # 🔸 Live log viewer
+                with st.expander("Live log (last 50)"):
+                    try:
+                        live_csv = os.path.join(log_dir, "live_trades.csv")
+                        if os.path.exists(live_csv):
+                            log_df = pd.read_csv(live_csv)
+                            st.dataframe(log_df.tail(50), use_container_width=True)
+                            st.download_button("Download live_trades.csv", log_df.to_csv(index=False), "live_trades.csv")
+                        else:
+                            st.caption("No live_trades.csv yet.")
+                    except Exception as e:
+                        st.warning(f"Could not read live log: {e}")
 
             except Exception as e:
                 st.error(f"Live stream failed: {e}")
