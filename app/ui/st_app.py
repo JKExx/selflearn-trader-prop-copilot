@@ -493,6 +493,20 @@ def main():
                     max_intraday_dd_from_high_pct=st.session_state.get("max_intraday_dd_from_high_pct") if st.session_state.get("intraday_dd_enabled", True) else None,
                 )
 
+                # ----- DEBUG: show stop reason + context -----
+                std = _std_ohlcv_bt(df_live)
+                warmup = int(st.session_state.get("min_samples", 1000))
+                first_tradable = (std.index[warmup] if len(std) > warmup else None)
+                last_trade_time = (pd.to_datetime(res.trades["time_open"].iloc[-1])
+                                   if hasattr(res, "trades") and not res.trades.empty else None)
+                st.caption(
+                    f"live bars={len(std)}  warmup={warmup}  "
+                    f"first_tradable={first_tradable}  "
+                    f"last_trade_time={last_trade_time}  "
+                    f"stop_reason={getattr(res, 'stop_reason', None)}"
+                )
+                # --------------------------------------------
+
                 tr = res.trades.tail(1)
                 if tr.empty or int(tr.iloc[0]["side"]) == 0:
                     st.write("No trade on last completed bar.")
