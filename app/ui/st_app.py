@@ -797,7 +797,7 @@ def main():
                     f"last_trade_time={last_trade_time} stop_reason={getattr(res, 'stop_reason', None)}"
                 )
 
-                # compliance (soft evaluation) — rules still NY-based
+                # ---- Compliance (soft evaluation) ----
                 pcfg = PropConfig(
                     daily_loss_pct=float(st.session_state.get("daily_loss_pct", 4.5)),
                     overall_loss_pct=float(st.session_state.get("overall_loss_pct", 10.0)),
@@ -807,14 +807,32 @@ def main():
                     news_blackout_mins=int(st.session_state.get("news_window", 0)) if st.session_state.get("news_on") else 0,
                     relevant_currencies=set(),
                 )
+
+                # Safe slice of trades since baseline
                 base = st.session_state.get("compliance_baseline", pd.Timestamp.utcnow().date())
-                tr_eval = res.trades[pd.to_datetime(res.trades["time_close"]).dt.date >= base]
+                trades_df = getattr(res, "trades", None)
+                if isinstance(trades_df, pd.DataFrame) and not trades_df.empty and "time_close" in trades_df.columns:
+                    tr_eval = trades_df[pd.to_datetime(trades_df["time_close"], utc=True).dt.date >= base]
+                else:
+                    tr_eval = pd.DataFrame(columns=["time_open", "time_close", "pnl"])
+
                 board, daily, _ = evaluate_prop(tr_eval, pcfg, news_df=None)
-                today_local = last_ts.tz_convert("America/New_York").strftime("%Y-%m-%d")
-                row_today = daily[daily["prop_day"] == today_local]
-                locked_today = bool(row_today["breached_daily"].iloc[0]) if not row_today.empty else False
+
+                # Today in NY (prop definition)
+                today_local = std.index[-1].tz_convert("America/New_York").strftime("%Y-%m-%d")
+
+                # Robust extraction of "locked today" and overall breach
+                locked_today = False
+                if isinstance(daily, pd.DataFrame) and not daily.empty:
+                    if "prop_day" in daily.columns and "breached_daily" in daily.columns:
+                        row_today = daily.loc[daily["prop_day"] == today_local]
+                        if not row_today.empty:
+                            locked_today = bool(row_today["breached_daily"].iloc[0])
+
                 overall_breached = bool(board.get("breaches_overall", 0))
                 max_dd = float(board.get("max_drawdown_pct", 0.0))
+
+                disp_tz = st.session_state.get("display_tz", "Europe/London")
                 st.caption(
                     f"compliance: locked_today={locked_today} overall_breached={overall_breached} "
                     f"max_dd={max_dd:.2f}% | shown in {disp_tz}"
