@@ -14,3 +14,5 @@ oandapyV20>=0.7.2
 streamlit-autorefresh>=1.0.1
 
 
+
+ta>=0.10.2
