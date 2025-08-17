@@ -1,10 +1,11 @@
 """
-Streamlit launcher. Use:
+Streamlit launcher. Run with:
     python -m streamlit run streamlit_app.py
+This imports the Streamlit UI module so its top-level code runs.
 """
-
 import os
 import sys
+import importlib
 
 ROOT = os.path.abspath(os.path.dirname(__file__))
 if ROOT not in sys.path:
@@ -12,10 +13,12 @@ if ROOT not in sys.path:
 
 
 def _main() -> None:
-    # Import inside to keep E402 happy and avoid partial import side-effects
-    from app.ui.st_app import main  # noqa: E402
-
-    main()
+    # If st_app exposes main(), call it; otherwise just import the module
+    try:
+        from app.ui.st_app import main as st_main  # noqa: E402
+        st_main()
+    except Exception:
+        importlib.import_module("app.ui.st_app")  # executes top-level Streamlit code
 
 
 if __name__ == "__main__":
