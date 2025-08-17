@@ -1,23 +1,26 @@
 # app/dataio/oanda.py
 from __future__ import annotations
 
-from typing import Optional
 import os
-import requests
+
 import pandas as pd
+import requests
 
 # --- helpers -----------------------------------------------------------------
+
 
 def _env_domain() -> str:
     env = (os.environ.get("OANDA_ENV") or "PRACTICE").upper()
     # PRACTICE = demo, FXTRADE = live
     return "api-fxtrade.oanda.com" if env in {"LIVE", "FXTRADE"} else "api-fxpractice.oanda.com"
 
+
 def _auth_headers() -> dict:
     token = os.environ.get("OANDA_TOKEN") or ""
     if not token:
         raise RuntimeError("OANDA_TOKEN not set (put it in ~/.selflearntrader/secrets.toml or env).")
     return {"Authorization": f"Bearer {token}"}
+
 
 def _granularity(interval: str) -> str:
     m = interval.lower()
@@ -31,6 +34,7 @@ def _granularity(interval: str) -> str:
         return "D"
     raise ValueError(f"Unsupported interval for OANDA: {interval}")
 
+
 def _to_iso_utc(s: str) -> str:
     ts = pd.to_datetime(s, utc=True, errors="coerce")
     if ts.tzinfo is None:
@@ -40,12 +44,14 @@ def _to_iso_utc(s: str) -> str:
     # OANDA likes RFC3339 with Z
     return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+
 def _only_complete(df: pd.DataFrame) -> pd.DataFrame:
     # Keep only completed candles (no partial current forming bar)
     if "complete" in df.columns:
         df = df[df["complete"] == True]  # noqa: E712
         df = df.drop(columns=["complete"])
     return df
+
 
 def _map_symbol(sym: str) -> str:
     s = (sym or "").upper().replace("/", "_")
@@ -58,19 +64,22 @@ def _map_symbol(sym: str) -> str:
         return f"{s[:3]}_{s[3:]}"
     return s
 
+
 # Exposed for UI import
 def _to_oanda_instrument(symbol: str) -> str:
     return _map_symbol(symbol)
 
+
 # --- main fetcher ------------------------------------------------------------
+
 
 def get_ohlcv_oanda(
     symbol: str,
     interval: str,
-    start: Optional[str] = None,
-    end: Optional[str] = None,
-    count: Optional[int] = None,
-    price: str = "M",   # M = mid, B = bid, A = ask
+    start: str | None = None,
+    end: str | None = None,
+    count: int | None = None,
+    price: str = "M",  # M = mid, B = bid, A = ask
 ) -> pd.DataFrame:
     """
     Fetch OANDA candles as OHLCV DataFrame (UTC index).

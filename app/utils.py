@@ -4,8 +4,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-
 # ---------- datetime helpers ----------
+
 
 def ensure_datetime_index(obj, tz: str = "UTC"):
     """
@@ -53,6 +53,7 @@ def _ensure_utc_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
 
 # ---------- session flags (DST-aware) ----------
 
+
 def session_flags(index: pd.DatetimeIndex) -> pd.DataFrame:
     """
     Build per-bar session/context flags (DST-aware).
@@ -66,11 +67,11 @@ def session_flags(index: pd.DatetimeIndex) -> pd.DataFrame:
 
     # Convert to real market local times (handles DST automatically)
     lon = utc.tz_convert("Europe/London")
-    ny  = utc.tz_convert("America/New_York")
+    ny = utc.tz_convert("America/New_York")
 
     # Local killzones (08:00–11:00 local)
     lon_kz = ((lon.hour >= 8) & (lon.hour < 11)).astype(int)
-    ny_kz  = ((ny.hour  >= 8) & (ny.hour  < 11)).astype(int)
+    ny_kz = ((ny.hour >= 8) & (ny.hour < 11)).astype(int)
 
     # Build output; never use .values on arrays
     out = pd.DataFrame(index=utc)

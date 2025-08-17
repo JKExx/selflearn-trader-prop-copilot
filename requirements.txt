@@ -16,3 +16,5 @@ streamlit-autorefresh>=1.0.1
 
 
 ta>=0.10.2
+watchdog
+streamlit-autorefresh

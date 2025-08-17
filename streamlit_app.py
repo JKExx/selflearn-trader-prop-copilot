@@ -2,6 +2,7 @@
 Streamlit launcher. Use:
     python -m streamlit run streamlit_app.py
 """
+
 import os
 import sys
 

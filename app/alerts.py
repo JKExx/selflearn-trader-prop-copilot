@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import requests
 
+
 def send_slack(webhook_url: str, text: str) -> bool:
     if not webhook_url:
         return False
@@ -11,6 +12,7 @@ def send_slack(webhook_url: str, text: str) -> bool:
         return True
     except Exception:
         return False
+
 
 def send_discord(webhook_url: str, content: str) -> bool:
     if not webhook_url:

@@ -1,14 +1,18 @@
 from __future__ import annotations
+
 import os
+
+import joblib
 import numpy as np
 from sklearn.linear_model import SGDClassifier
 from sklearn.preprocessing import StandardScaler
-import joblib
+
 
 def _to_numpy(X):
     if hasattr(X, "values"):
         X = X.values
     return np.asarray(X, dtype=float)
+
 
 class OnlineClassifier:
     """
@@ -18,8 +22,8 @@ class OnlineClassifier:
     - Persists scaler/model + feature count
     - Auto-resets if feature count changes between runs
     """
-    def __init__(self, model_path: str = "models_ckpt/online_clf.joblib",
-                 random_state: int = 42, alpha: float = 1e-4):
+
+    def __init__(self, model_path: str = "models_ckpt/online_clf.joblib", random_state: int = 42, alpha: float = 1e-4):
         self.model_path = model_path
         self._random_state = random_state
         self._alpha = alpha
@@ -28,8 +32,11 @@ class OnlineClassifier:
     def _reset(self):
         self.scaler = StandardScaler(with_mean=True, with_std=True)
         self.clf = SGDClassifier(
-            loss="log_loss", penalty="l2", alpha=self._alpha,
-            learning_rate="optimal", random_state=self._random_state,
+            loss="log_loss",
+            penalty="l2",
+            alpha=self._alpha,
+            learning_rate="optimal",
+            random_state=self._random_state,
         )
         self._initialized = False
         self._classes = np.array([0, 1], dtype=int)
@@ -88,15 +95,18 @@ class OnlineClassifier:
 
     def save(self) -> None:
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
-        joblib.dump({
-            "scaler": self.scaler,
-            "clf": self.clf,
-            "initialized": self._initialized,
-            "classes": self._classes,
-            "n_features": self._n_features,
-            "alpha": self._alpha,
-            "random_state": self._random_state,
-        }, self.model_path)
+        joblib.dump(
+            {
+                "scaler": self.scaler,
+                "clf": self.clf,
+                "initialized": self._initialized,
+                "classes": self._classes,
+                "n_features": self._n_features,
+                "alpha": self._alpha,
+                "random_state": self._random_state,
+            },
+            self.model_path,
+        )
 
     def load_if_exists(self) -> bool:
         if os.path.exists(self.model_path):

@@ -1,13 +1,15 @@
 # app/news.py
 from __future__ import annotations
 
-from typing import List, Dict, Any, Iterable
-import requests
+from collections.abc import Iterable
+from typing import Any
 import pandas as pd
-from icalendar import Calendar
 import pytz
+import requests
+from icalendar import Calendar
 
 UTC = pytz.UTC
+
 
 def _to_utc(dt_like) -> pd.Timestamp:
     ts = pd.to_datetime(dt_like, errors="coerce")
@@ -15,12 +17,13 @@ def _to_utc(dt_like) -> pd.Timestamp:
         return ts.tz_localize("UTC")
     return ts.tz_convert("UTC")
 
-def fetch_ics(url: str) -> List[Dict[str, Any]]:
+
+def fetch_ics(url: str) -> list[dict[str, Any]]:
     """Fetch an .ics calendar and return list of events: {start, end, summary} in UTC."""
     r = requests.get(url, timeout=15)
     r.raise_for_status()
     cal = Calendar.from_ical(r.content)
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for comp in cal.walk():
         if comp.name != "VEVENT":
             continue
@@ -30,8 +33,9 @@ def fetch_ics(url: str) -> List[Dict[str, Any]]:
         out.append({"start": _to_utc(start), "end": _to_utc(end), "summary": summary})
     return out
 
+
 def filter_events(
-    events: Iterable[Dict[str, Any]],
+    events: Iterable[dict[str, Any]],
     window_minutes: int,
     lo: pd.Timestamp,
     hi: pd.Timestamp,

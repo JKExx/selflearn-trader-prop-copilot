@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+
 def streaks(trades: pd.DataFrame):
     s = (trades["pnl"] > 0).astype(int).values
     if len(s) == 0:
@@ -20,6 +21,7 @@ def streaks(trades: pd.DataFrame):
         max_w = max(max_w, cur_w)
         max_l = max(max_l, cur_l)
     return max_w, max_l
+
 
 def compute_metrics(trades: pd.DataFrame) -> dict:
     if trades is None or trades.empty:

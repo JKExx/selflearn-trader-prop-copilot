@@ -12,10 +12,12 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# ---------- internal modules ----------
-from ..backtest import run_backtest, _std_ohlcv as _std_ohlcv_bt
 from ..analysis.metrics import compute_metrics
 from ..analysis.prop_eval import PropConfig, evaluate_prop
+from ..backtest import _std_ohlcv as _std_ohlcv_bt
+
+# ---------- internal modules ----------
+from ..backtest import run_backtest
 
 # Data fetchers (optionals)
 try:
@@ -25,7 +27,8 @@ except Exception:  # pragma: no cover
 
 HAVE_OANDA = False
 try:
-    from ..dataio.oanda import get_ohlcv_oanda, _to_oanda_instrument
+    from ..dataio.oanda import _to_oanda_instrument, get_ohlcv_oanda
+
     HAVE_OANDA = True
 except Exception:  # pragma: no cover
     HAVE_OANDA = False
@@ -36,8 +39,9 @@ except Exception:  # pragma: no cover
     fetch_ics = None
 
 try:
-    from ..alerts import send_slack, send_discord
+    from ..alerts import send_discord, send_slack
 except Exception:  # pragma: no cover
+
     def send_slack(*a, **k) -> bool:  # type: ignore
         return False
 
@@ -280,7 +284,9 @@ def main():
                     os.environ["OANDA_ENV"] = worked
                     st.session_state["OANDA_ENV"] = worked
                 else:
-                    st.warning("Connected, but 0 rows on both envs. Market closed, instrument disabled in this env, or permissions issue.")
+                    st.warning(
+                        "Connected, but 0 rows on both envs. Market closed, instrument disabled in this env, or permissions issue."
+                    )
                 st.code("\n".join(lines))
 
         # ----- Data -----
@@ -321,47 +327,140 @@ def main():
 
         # ----- Decision & Learning -----
         st.header("Decision & Learning")
-        threshold = st.slider("Decision threshold", 0.50, 0.75, st.session_state.get("threshold", 0.69), 0.01, key="threshold")
+        threshold = st.slider(
+            "Decision threshold", 0.50, 0.75, st.session_state.get("threshold", 0.69), 0.01, key="threshold"
+        )
         colA, colB, colC = st.columns([1, 1, 1])
         with colA:
-            eps_start = st.number_input("Epsilon start", 0.0, 1.0, st.session_state.get("eps_start", 0.03), 0.01, key="eps_start")
+            eps_start = st.number_input(
+                "Epsilon start", 0.0, 1.0, st.session_state.get("eps_start", 0.03), 0.01, key="eps_start"
+            )
         with colB:
-            eps_final = st.number_input("Epsilon final", 0.0, 1.0, st.session_state.get("eps_final", 0.00), 0.01, key="eps_final")
+            eps_final = st.number_input(
+                "Epsilon final", 0.0, 1.0, st.session_state.get("eps_final", 0.00), 0.01, key="eps_final"
+            )
         with colC:
-            eps_decay_trades = st.number_input("Epsilon decay trades", 0, 5000, st.session_state.get("eps_decay_trades", 75), 25, key="eps_decay_trades")
+            eps_decay_trades = st.number_input(
+                "Epsilon decay trades",
+                0,
+                5000,
+                st.session_state.get("eps_decay_trades", 75),
+                25,
+                key="eps_decay_trades",
+            )
 
-        trade_start = st.text_input("Trade start date (UTC, optional)", value=st.session_state.get("trade_start", ""), key="trade_start")
-        min_samples = st.number_input("Warmup bars (for scaler init)", 50, 10000, st.session_state.get("min_samples", 1000), 50, key="min_samples")
+        trade_start = st.text_input(
+            "Trade start date (UTC, optional)", value=st.session_state.get("trade_start", ""), key="trade_start"
+        )
+        min_samples = st.number_input(
+            "Warmup bars (for scaler init)", 50, 10000, st.session_state.get("min_samples", 1000), 50, key="min_samples"
+        )
 
         # ----- Risk & Costs -----
         st.header("Risk & Costs")
-        starting_cash = st.number_input("Starting cash", 1000.0, 5_000_000.0, st.session_state.get("starting_cash", 10_000.0), 1000.0, key="starting_cash")
-        risk_per_trade_pct = st.number_input("Risk per trade (%)", 0.1, 5.0, st.session_state.get("risk_per_trade_pct", 1.0), 0.1, key="risk_per_trade_pct")
-        atr_mult = st.number_input("ATR multiple for stop", 0.2, 5.0, st.session_state.get("atr_mult", 1.0), 0.1, key="atr_mult")
-        spread_pips = st.number_input("Spread (pips, RT)", 0.0, 10.0, st.session_state.get("spread_pips", 0.20), 0.05, key="spread_pips")
-        slippage_pips = st.number_input("Slippage (pips each side)", 0.0, 10.0, st.session_state.get("slippage_pips", 0.10), 0.05, key="slippage_pips")
-        commission = st.number_input("Commission per trade (quote ccy)", 0.0, 100.0, st.session_state.get("commission", 0.0), 0.1, key="commission")
+        starting_cash = st.number_input(
+            "Starting cash",
+            1000.0,
+            5_000_000.0,
+            st.session_state.get("starting_cash", 10_000.0),
+            1000.0,
+            key="starting_cash",
+        )
+        risk_per_trade_pct = st.number_input(
+            "Risk per trade (%)",
+            0.1,
+            5.0,
+            st.session_state.get("risk_per_trade_pct", 1.0),
+            0.1,
+            key="risk_per_trade_pct",
+        )
+        atr_mult = st.number_input(
+            "ATR multiple for stop", 0.2, 5.0, st.session_state.get("atr_mult", 1.0), 0.1, key="atr_mult"
+        )
+        spread_pips = st.number_input(
+            "Spread (pips, RT)", 0.0, 10.0, st.session_state.get("spread_pips", 0.20), 0.05, key="spread_pips"
+        )
+        slippage_pips = st.number_input(
+            "Slippage (pips each side)",
+            0.0,
+            10.0,
+            st.session_state.get("slippage_pips", 0.10),
+            0.05,
+            key="slippage_pips",
+        )
+        commission = st.number_input(
+            "Commission per trade (quote ccy)",
+            0.0,
+            100.0,
+            st.session_state.get("commission", 0.0),
+            0.1,
+            key="commission",
+        )
 
         # ----- Prop Mode -----
         st.header("Prop Mode (enforcement)")
-        daily_loss_pct = st.number_input("Daily loss cap %", 0.0, 20.0, st.session_state.get("daily_loss_pct", 4.5), 0.1, key="daily_loss_pct")
-        overall_loss_pct = st.number_input("Overall loss cap %", 0.0, 50.0, st.session_state.get("overall_loss_pct", 10.0), 0.1, key="overall_loss_pct")
-        stop_target_on = st.checkbox("Stop at profit target", value=st.session_state.get("stop_target_on", True), key="stop_target_on")
-        stop_target_pct = (st.number_input("Profit target %", 0.0, 100.0, st.session_state.get("stop_target_pct", 8.0), 0.5, key="stop_target_pct") / 100.0) if stop_target_on else None
-        friday_cutoff_local = int(st.number_input("Friday cutoff hour (New York local)", 0, 23, int(st.session_state.get("friday_cutoff_local", 22)), 1, key="friday_cutoff_local"))
+        daily_loss_pct = st.number_input(
+            "Daily loss cap %", 0.0, 20.0, st.session_state.get("daily_loss_pct", 4.5), 0.1, key="daily_loss_pct"
+        )
+        overall_loss_pct = st.number_input(
+            "Overall loss cap %", 0.0, 50.0, st.session_state.get("overall_loss_pct", 10.0), 0.1, key="overall_loss_pct"
+        )
+        stop_target_on = st.checkbox(
+            "Stop at profit target", value=st.session_state.get("stop_target_on", True), key="stop_target_on"
+        )
+        stop_target_pct = (
+            (
+                st.number_input(
+                    "Profit target %",
+                    0.0,
+                    100.0,
+                    st.session_state.get("stop_target_pct", 8.0),
+                    0.5,
+                    key="stop_target_pct",
+                )
+                / 100.0
+            )
+            if stop_target_on
+            else None
+        )
+        friday_cutoff_local = int(
+            st.number_input(
+                "Friday cutoff hour (New York local)",
+                0,
+                23,
+                int(st.session_state.get("friday_cutoff_local", 22)),
+                1,
+                key="friday_cutoff_local",
+            )
+        )
 
         # ----- Gating & Persistence -----
         st.header("Gating & Persistence")
-        gate_kz = st.checkbox("Only trade in London/NY killzones (UTC)", value=st.session_state.get("gate_kz", True), key="gate_kz")
-        persist_model = st.checkbox("Persist model between runs", value=st.session_state.get("persist_model", False), key="persist_model")
+        gate_kz = st.checkbox(
+            "Only trade in London/NY killzones (UTC)", value=st.session_state.get("gate_kz", True), key="gate_kz"
+        )
+        persist_model = st.checkbox(
+            "Persist model between runs", value=st.session_state.get("persist_model", False), key="persist_model"
+        )
 
         # ----- News -----
         with st.expander("News filter (toggle/ICS)"):
             news_on = st.checkbox("Enable news blackout", value=st.session_state.get("news_on", False), key="news_on")
-            ics_url = st.text_input("ICS / calendar URL", value=st.session_state.get("ics_url", ""), key="ics_url", placeholder="webcal:// or https:// …")
+            ics_url = st.text_input(
+                "ICS / calendar URL",
+                value=st.session_state.get("ics_url", ""),
+                key="ics_url",
+                placeholder="webcal:// or https:// …",
+            )
             kws_default = st.session_state.get("news_keywords", "USD;High;FOMC;CPI;NFP")
             st.text_input("Keywords (semicolon separated)", value=kws_default, key="news_keywords")
-            st.slider("Blackout ± minutes", min_value=0, max_value=15, value=st.session_state.get("news_window", 2), key="news_window")
+            st.slider(
+                "Blackout ± minutes",
+                min_value=0,
+                max_value=15,
+                value=st.session_state.get("news_window", 2),
+                key="news_window",
+            )
             if news_on and ics_url and st.button("Test fetch ICS"):
                 if fetch_ics is None:
                     st.warning("ICS parser not available.")
@@ -369,7 +468,12 @@ def main():
                     try:
                         events = fetch_ics(ics_url)
                         st.success(f"Fetched {len(events)} events.")
-                        st.write([{"start": str(e["start"]), "end": str(e["end"]), "summary": e["summary"][:80]} for e in events[:30]])
+                        st.write(
+                            [
+                                {"start": str(e["start"]), "end": str(e["end"]), "summary": e["summary"][:80]}
+                                for e in events[:30]
+                            ]
+                        )
                     except Exception as e:
                         st.error(f"{e}")
 
@@ -378,18 +482,50 @@ def main():
             col1, col2 = st.columns(2)
             with col1:
                 trailing_hwm_enabled = st.checkbox("Enable trailing HWM cap", value=True, key="trailing_hwm_enabled")
-                trailing_hwm_cap_pct = (st.number_input("Trailing HWM cap % (stop)", 0.0, 20.0, 3.0, 0.5, key="trailing_hwm_cap_pct_val") / 100.0) if trailing_hwm_enabled else None
+                trailing_hwm_cap_pct = (
+                    (
+                        st.number_input(
+                            "Trailing HWM cap % (stop)", 0.0, 20.0, 3.0, 0.5, key="trailing_hwm_cap_pct_val"
+                        )
+                        / 100.0
+                    )
+                    if trailing_hwm_enabled
+                    else None
+                )
                 max_trades_per_day = st.number_input("Max trades per day", 0, 50, 5, 1)
                 max_trades_per_day = int(max_trades_per_day) if max_trades_per_day > 0 else None
-                intraday_dd_enabled = st.checkbox("Enable max intraday DD from day high", value=True, key="intraday_dd_enabled")
-                max_intraday_dd_from_high_pct = (st.number_input("Max intraday DD from day high % (lock day)", 0.5, 20.0, 3.0, 0.5, key="intraday_dd_val") / 100.0) if intraday_dd_enabled else None
+                intraday_dd_enabled = st.checkbox(
+                    "Enable max intraday DD from day high", value=True, key="intraday_dd_enabled"
+                )
+                max_intraday_dd_from_high_pct = (
+                    (
+                        st.number_input(
+                            "Max intraday DD from day high % (lock day)", 0.5, 20.0, 3.0, 0.5, key="intraday_dd_val"
+                        )
+                        / 100.0
+                    )
+                    if intraday_dd_enabled
+                    else None
+                )
             with col2:
                 loss_streak_trigger = st.number_input("Loss streak trigger (N losses)", 0, 10, 2, 1)
                 loss_streak_pause_bars = st.number_input("Pause bars after loss streak", 0, 100, 4, 1)
                 dd_adapt_enabled = st.checkbox("Enable drawdown adapt mode", value=True, key="dd_adapt_enabled")
-                dd_adapt_threshold_pct = (st.number_input("Adapt mode below HWM %", 0.5, 20.0, 2.0, 0.5, key="dd_adapt_thresh_val") / 100.0) if dd_adapt_enabled else None
-                dd_adapt_risk = (st.number_input("Risk in adapt mode %", 0.1, 5.0, 0.5, 0.1, key="dd_adapt_risk_val") / 100.0) if dd_adapt_enabled else None
-                dd_adapt_threshold_bump = (st.number_input("Threshold bump in adapt", 0.0, 0.1, 0.01, 0.01, key="dd_adapt_bump_val")) if dd_adapt_enabled else 0.0
+                dd_adapt_threshold_pct = (
+                    (st.number_input("Adapt mode below HWM %", 0.5, 20.0, 2.0, 0.5, key="dd_adapt_thresh_val") / 100.0)
+                    if dd_adapt_enabled
+                    else None
+                )
+                dd_adapt_risk = (
+                    (st.number_input("Risk in adapt mode %", 0.1, 5.0, 0.5, 0.1, key="dd_adapt_risk_val") / 100.0)
+                    if dd_adapt_enabled
+                    else None
+                )
+                dd_adapt_threshold_bump = (
+                    (st.number_input("Threshold bump in adapt", 0.0, 0.1, 0.01, 0.01, key="dd_adapt_bump_val"))
+                    if dd_adapt_enabled
+                    else 0.0
+                )
 
         # ----- Presets -----
         st.header("Presets")
@@ -403,7 +539,9 @@ def main():
             with open(os.path.join("presets", f"{name}.json")) as f:
                 return json.load(f)
 
-        preset_name = st.text_input("Preset name", st.session_state.get("preset_name", "GOAT_XAU_1h_069"), key="preset_name")
+        preset_name = st.text_input(
+            "Preset name", st.session_state.get("preset_name", "GOAT_XAU_1h_069"), key="preset_name"
+        )
         colP1, colP2, colP3 = st.columns([1, 1, 1])
         with colP1:
             if st.button("💾 Save preset"):
@@ -443,7 +581,9 @@ def main():
                     "dd_adapt_threshold_pct": float(dd_adapt_threshold_pct) if dd_adapt_enabled else None,
                     "dd_adapt_risk": float(dd_adapt_risk) if dd_adapt_enabled else None,
                     "dd_adapt_threshold_bump": float(dd_adapt_threshold_bump) if dd_adapt_enabled else 0.0,
-                    "max_intraday_dd_from_high_pct": float(max_intraday_dd_from_high_pct) if intraday_dd_enabled else None,
+                    "max_intraday_dd_from_high_pct": float(max_intraday_dd_from_high_pct)
+                    if intraday_dd_enabled
+                    else None,
                 }
                 _save_preset(preset_name, payload)
                 st.success(f"Saved → presets/{preset_name}.json")
@@ -487,7 +627,9 @@ def main():
                     if st.session_state.get("news_on") and st.session_state.get("ics_url") and fetch_ics:
                         try:
                             news_events_to_pass = fetch_ics(st.session_state["ics_url"])
-                            news_keywords_list = [k.strip() for k in (st.session_state.get("news_keywords") or "").split(";")]
+                            news_keywords_list = [
+                                k.strip() for k in (st.session_state.get("news_keywords") or "").split(";")
+                            ]
                         except Exception as e:
                             st.warning(f"News fetch skipped: {e}")
 
@@ -599,7 +741,9 @@ def main():
             ts = np.round(np.linspace(0.50, 0.72, 12), 3)
             rows = []
             for t in ts:
-                mask = ((df_tr["side"] == 1) & (df_tr["p_up"] >= t)) | ((df_tr["side"] == -1) & (df_tr["p_up"] <= (1 - t)))
+                mask = ((df_tr["side"] == 1) & (df_tr["p_up"] >= t)) | (
+                    (df_tr["side"] == -1) & (df_tr["p_up"] <= (1 - t))
+                )
                 sub = df_tr[mask]
                 wins = sub["pnl"][sub["pnl"] > 0].sum()
                 losses = sub["pnl"][sub["pnl"] < 0].sum()
@@ -643,7 +787,9 @@ def main():
                 profit_target_pct=None,
                 day_boundary_tz="America/New_York",
                 friday_cutoff_hour_local=int(st.session_state.get("friday_cutoff_local", 22)),
-                news_blackout_mins=int(st.session_state.get("news_window", 0)) if st.session_state.get("news_on") else 0,
+                news_blackout_mins=int(st.session_state.get("news_window", 0))
+                if st.session_state.get("news_on")
+                else 0,
                 relevant_currencies=set(),
             )
             board, daily, violations = evaluate_prop(tr, pcfg, news_df=None)
@@ -804,7 +950,9 @@ def main():
                     profit_target_pct=None,
                     day_boundary_tz="America/New_York",
                     friday_cutoff_hour_local=int(st.session_state.get("friday_cutoff_local", 22)),
-                    news_blackout_mins=int(st.session_state.get("news_window", 0)) if st.session_state.get("news_on") else 0,
+                    news_blackout_mins=int(st.session_state.get("news_window", 0))
+                    if st.session_state.get("news_on")
+                    else 0,
                     relevant_currencies=set(),
                 )
 
@@ -952,7 +1100,9 @@ def main():
                         if os.path.exists(live_csv):
                             log_df = pd.read_csv(live_csv)
                             st.dataframe(log_df.tail(50), use_container_width=True)
-                            st.download_button("Download live_trades.csv", log_df.to_csv(index=False), "live_trades.csv")
+                            st.download_button(
+                                "Download live_trades.csv", log_df.to_csv(index=False), "live_trades.csv"
+                            )
                         else:
                             st.caption("No live_trades.csv yet.")
                     except Exception as e:
