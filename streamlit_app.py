@@ -1,10 +1,13 @@
+"""
+Launcher so you can run:  python -m streamlit run streamlit_app.py
+This imports the real app as a module, so relative imports in app/ui/st_app.py work.
+"""
+import os, sys
+ROOT = os.path.abspath(os.path.dirname(__file__))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-import streamlit as st
-import traceback
-try:
-    from app.ui.st_app import main
+from app.ui.st_app import main
+
+if __name__ == "__main__":
     main()
-except Exception:
-    st.set_page_config(page_title="SelfLearn Trader", layout="wide")
-    st.error("App failed to load.")
-    st.code(traceback.format_exc())
