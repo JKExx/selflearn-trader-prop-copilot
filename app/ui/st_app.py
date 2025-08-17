@@ -1,23 +1,45 @@
-# app/ui/st_app.py
 from __future__ import annotations
 
 import contextlib
 import json
+
+# ---- stdlib
 import os
 import pathlib
+import time
 import traceback
+from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
+
+# ---- third-party
 import numpy as np
 import pandas as pd
 import streamlit as st
+import toml
 
+try:
+    from streamlit_autorefresh import st_autorefresh
+except Exception:  # optional dependency
+
+    def st_autorefresh(*args, **kwargs):
+        return None
+
+
+# ---- internal modules
 from ..analysis.metrics import compute_metrics
 from ..analysis.prop_eval import PropConfig, evaluate_prop
 from ..backtest import _std_ohlcv as _std_ohlcv_bt
+from ..backtest import run_backtest
+from ..dataio.oanda import _to_oanda_instrument, get_ohlcv_oanda
+
+st.sidebar.caption(f"Prop Copilot {os.getenv('APP_VERSION', 'dev')}")
 
 # ---------- internal modules ----------
-from ..backtest import run_backtest
+
+# app/ui/st_app.py
+
+# ---------- internal modules ----------
 
 # Data fetchers (optionals)
 try:
@@ -58,8 +80,6 @@ def _bootstrap_secrets():
     # home
     with contextlib.suppress(Exception):
         if SECRETS_HOME.exists():
-            import toml
-
             s = toml.load(SECRETS_HOME)
             tok = s.get("OANDA_TOKEN", "")
             env = s.get("OANDA_ENV", "PRACTICE")
@@ -73,8 +93,6 @@ def _bootstrap_secrets():
     with contextlib.suppress(Exception):
         local = pathlib.Path("secrets.toml")
         if local.exists():
-            import toml
-
             s = toml.load(local)
             tok = s.get("OANDA_TOKEN", "")
             env = s.get("OANDA_ENV", "PRACTICE")
@@ -869,8 +887,6 @@ def main():
                     f"now={now_local} delay_min={delay_min:.1f}"
                 )
                 try:
-                    from streamlit_autorefresh import st_autorefresh
-
                     next_open = now.floor(f"{bar_minutes}min") + pd.Timedelta(minutes=bar_minutes)
                     sec_to_next = max(1, int((next_open - now).total_seconds()))
                     refresh_ms = int(min(120_000, max(5_000, (sec_to_next + 2) * 1000)))
@@ -1146,3 +1162,27 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# --- helpers: heartbeat (auto-added) ---
+
+
+@dataclass
+class _LiveStatus:
+    last_bar_utc: pd.Timestamp | None
+    minutes_since_bar: float | None
+    fetch_ms: int | None
+    ok: bool
+    reason: str
+
+
+def _heartbeat(fetch_fn, symbol: str, interval: str) -> _LiveStatus:
+    t0 = time.perf_counter()
+    try:
+        df = fetch_fn(symbol=symbol, interval=interval, count=3, complete_only=True)
+        ms = int((time.perf_counter() - t0) * 1000)
+        last = pd.to_datetime(df.index[-1]).tz_convert("UTC") if len(df) else None
+        mins = (pd.Timestamp.utcnow().tz_localize("UTC") - last).total_seconds() / 60.0 if last is not None else None
+        ok = mins is not None and mins < 120  # 1–2 bars stale tolerance for 1h
+        return _LiveStatus(last, mins, ms, ok, "")
+    except Exception as e:
+        return _LiveStatus(None, None, None, False, f"{type(e).__name__}: {e}")
