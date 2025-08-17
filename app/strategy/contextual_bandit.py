@@ -1,11 +1,14 @@
-import numpy as np
 from dataclasses import dataclass
+
+import numpy as np
+
 
 @dataclass
 class PolicyOutput:
     action: int
     explore: bool
     p_up: float
+
 
 class EpsilonGreedyPolicy:
     def __init__(self, epsilon: float = 0.1):

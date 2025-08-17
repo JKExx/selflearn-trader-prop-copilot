@@ -1,9 +1,11 @@
 # app/features.py
 import pandas as pd
 from ta.momentum import RSIIndicator
-from ta.trend import SMAIndicator, EMAIndicator
+from ta.trend import EMAIndicator, SMAIndicator
 from ta.volatility import AverageTrueRange
+
 from .utils import session_flags
+
 
 def make_features(df: pd.DataFrame):
     """
@@ -52,9 +54,7 @@ def make_features(df: pd.DataFrame):
     df["ema_slope"] = df["ema_20"].diff()
 
     # --- Volatility / ATR ---
-    atr14 = AverageTrueRange(
-        high=df["High"], low=df["Low"], close=df["Close"], window=14
-    ).average_true_range()
+    atr14 = AverageTrueRange(high=df["High"], low=df["Low"], close=df["Close"], window=14).average_true_range()
     df["atr_14"] = atr14
     df["atr_norm"] = df["atr_14"] / df["Close"]
 
@@ -73,12 +73,19 @@ def make_features(df: pd.DataFrame):
     df = df.dropna().copy()
 
     feature_cols = [
-        "ret_1", "ret_5", "ret_20",
+        "ret_1",
+        "ret_5",
+        "ret_20",
         "rsi_14",
-        "sma_slope", "ema_slope",
+        "sma_slope",
+        "ema_slope",
         "atr_norm",
-        "px_vs_sma", "px_vs_ema",
-        "hour", "dow", "is_london_kz", "is_ny_kz",
+        "px_vs_sma",
+        "px_vs_ema",
+        "hour",
+        "dow",
+        "is_london_kz",
+        "is_ny_kz",
     ]
 
     return df, feature_cols

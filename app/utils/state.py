@@ -4,6 +4,7 @@ from pathlib import Path
 STATE_DIR = Path(".state")
 STATE_FILE = STATE_DIR / "live.json"
 
+
 def load_state() -> dict:
     STATE_DIR.mkdir(exist_ok=True)
     if STATE_FILE.exists():
@@ -12,6 +13,7 @@ def load_state() -> dict:
         except Exception:
             return {}
     return {}
+
 
 def save_state(d: dict) -> None:
     STATE_DIR.mkdir(exist_ok=True)

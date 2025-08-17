@@ -1,10 +1,10 @@
 import pandas as pd
-from typing import List, Dict
+
 
 class TradeJournal:
     def __init__(self, path: str = "trades.csv"):
         self.path = path
-        self.rows: List[Dict] = []
+        self.rows: list[dict] = []
 
     def log(self, **kwargs):
         self.rows.append(kwargs)

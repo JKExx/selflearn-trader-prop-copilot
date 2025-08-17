@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+
 import pandas as pd
+
 
 @dataclass
 class PropConfig:
@@ -14,9 +16,11 @@ class PropConfig:
     news_blackout_mins: int = 0
     relevant_currencies: set[str] | None = None
 
+
 def _to_prop_day(ts_utc: pd.Timestamp, tz: str) -> str:
     local = ts_utc.tz_convert(tz)
     return local.strftime("%Y-%m-%d")
+
 
 def evaluate_prop(trades: pd.DataFrame, cfg: PropConfig, news_df: pd.DataFrame | None = None):
     """Compute board (summary), per-day table, and violations list."""
@@ -45,7 +49,7 @@ def evaluate_prop(trades: pd.DataFrame, cfg: PropConfig, news_df: pd.DataFrame |
 
     # Daily breach: if day PnL <= -daily_loss_pct * start_eq_of_that_day (approx via day_max_eq)
     daily_cap = float(cfg.daily_loss_pct)
-    daily["breached_daily"] = (daily["day_min_dd_pct"] <= -(daily_cap / 100.0))
+    daily["breached_daily"] = daily["day_min_dd_pct"] <= -(daily_cap / 100.0)
 
     # Overall breach: from high-water mark
     eq = df["equity_after"].astype(float)
@@ -56,7 +60,7 @@ def evaluate_prop(trades: pd.DataFrame, cfg: PropConfig, news_df: pd.DataFrame |
     # Profit target?
     profit_hit = False
     if cfg.profit_target_pct is not None:
-        profit_hit = (cur_eq >= start_eq * (1.0 + float(cfg.profit_target_pct)))
+        profit_hit = cur_eq >= start_eq * (1.0 + float(cfg.profit_target_pct))
 
     board = {
         "start_eq": start_eq,

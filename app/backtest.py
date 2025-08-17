@@ -97,13 +97,13 @@ def run_backtest(
     news_keywords: list[str] | None = None,
     news_blackout_minutes: int = 0,
     # -------- Guardrails (new) --------
-    trailing_hwm_cap_pct: float | None = None,   # stop whole phase if drop from HWM > X%
-    max_trades_per_day: int | None = None,       # cap number of trades per prop day
-    loss_streak_pause_bars: int = 0,                # pause N bars after loss streak
-    loss_streak_trigger: int = 0,                   # trigger after N consecutive losses
-    dd_adapt_threshold_pct: float | None = None, # enter adapt mode when eq <= HWM*(1-X)
-    dd_adapt_risk: float | None = None,          # risk while in adapt mode
-    dd_adapt_threshold_bump: float = 0.0,           # add to threshold while in adapt
+    trailing_hwm_cap_pct: float | None = None,  # stop whole phase if drop from HWM > X%
+    max_trades_per_day: int | None = None,  # cap number of trades per prop day
+    loss_streak_pause_bars: int = 0,  # pause N bars after loss streak
+    loss_streak_trigger: int = 0,  # trigger after N consecutive losses
+    dd_adapt_threshold_pct: float | None = None,  # enter adapt mode when eq <= HWM*(1-X)
+    dd_adapt_risk: float | None = None,  # risk while in adapt mode
+    dd_adapt_threshold_bump: float = 0.0,  # add to threshold while in adapt
     max_intraday_dd_from_high_pct: float | None = None,  # lock rest of day if drop from day-high > X
 ) -> BacktestResult:
     """One-bar open/close simulator with online learning + prop guardrails."""
@@ -204,7 +204,7 @@ def run_backtest(
 
         # learning-only warmup before calendar start
         if (trade_start_ts is not None) and (ts < trade_start_ts):
-            model.partial_fit(X_full[i:i + 1], y_full[i:i + 1])
+            model.partial_fit(X_full[i : i + 1], y_full[i : i + 1])
             continue
 
         # new prop day
@@ -239,36 +239,37 @@ def run_backtest(
         if friday_cutoff_local is not None:
             loc = local[i]
             if loc.weekday() == 4 and loc.hour >= int(friday_cutoff_local):
-                model.partial_fit(X_full[i:i + 1], y_full[i:i + 1])
+                model.partial_fit(X_full[i : i + 1], y_full[i : i + 1])
                 continue
 
         # daily cap lockout
         if enforce_daily_cap and day_locked:
-            model.partial_fit(X_full[i:i + 1], y_full[i:i + 1])
+            model.partial_fit(X_full[i : i + 1], y_full[i : i + 1])
             continue
 
         # max trades per day
         if (max_trades_per_day is not None) and (trades_today >= int(max_trades_per_day)):
-            model.partial_fit(X_full[i:i + 1], y_full[i:i + 1])
+            model.partial_fit(X_full[i : i + 1], y_full[i : i + 1])
             continue
 
         # loss-streak cooldown
         if pause_bars_left > 0:
             pause_bars_left -= 1
-            model.partial_fit(X_full[i:i + 1], y_full[i:i + 1])
+            model.partial_fit(X_full[i : i + 1], y_full[i : i + 1])
             continue
 
         # news blackout
         if news_events and news_blackout_minutes > 0:
             from .news import blackout_now  # local import to avoid hard dep at import time
+
             if blackout_now(ts, news_events, news_keywords or [], news_blackout_minutes):
-                model.partial_fit(X_full[i:i + 1], y_full[i:i + 1])
+                model.partial_fit(X_full[i : i + 1], y_full[i : i + 1])
                 continue
 
         # killzones gating
         if gate_killzones:
             if int(feat_df["is_london_kz"].iloc[i] or feat_df["is_ny_kz"].iloc[i]) != 1:
-                model.partial_fit(X_full[i:i + 1], y_full[i:i + 1])
+                model.partial_fit(X_full[i : i + 1], y_full[i : i + 1])
                 continue
 
         # epsilon schedule
@@ -287,7 +288,7 @@ def run_backtest(
             eff_threshold = float(eff_threshold + dd_adapt_threshold_bump)
 
         # model decision
-        proba = model.predict_proba(X_full[i:i + 1])[0, 1]
+        proba = model.predict_proba(X_full[i : i + 1])[0, 1]
         explored = False
         if rng.random() < epsilon:
             explored = True
@@ -309,11 +310,11 @@ def run_backtest(
         # execution (apply costs)
         entry_exec, exit_exec = entry_mid, exit_mid
         if side == 1:
-            entry_exec += (spread_px + slip_px_in)
-            exit_exec -= (spread_px + slip_px_out)
+            entry_exec += spread_px + slip_px_in
+            exit_exec -= spread_px + slip_px_out
         elif side == -1:
-            entry_exec -= (spread_px + slip_px_in)
-            exit_exec += (spread_px + slip_px_out)
+            entry_exec -= spread_px + slip_px_in
+            exit_exec += spread_px + slip_px_out
 
         pnl = 0.0
         if side == 1:
@@ -345,40 +346,37 @@ def run_backtest(
                 hwm = equity
 
             # ---- log rich trade so Live can mirror SL/TP exactly ----
-            trades.append({
-                "time_open": ts,
-                "time_close": feat_df.index[i + 1],
-
-                # decision/result
-                "side": int(side),
-                "p_up": float(proba),
-                "explored": int(explored),
-                "eff_threshold": float(eff_threshold),
-                "eff_risk": float(eff_risk),
-
-                # prices & sizing (mid vs exec after costs)
-                "entry_price": round(entry_mid, 6),   # mid used for sizing
-                "entry_exec": round(entry_exec, 6),   # executed price after costs
-                "exit_exec": round(exit_exec, 6),     # executed exit price after costs
-                "units_raw": float(units),
-                "units": round(units, 6),
-
-                # risk model (so Live can compute SL/TP identically)
-                "atr_used": round(bar_atr, 6),
-                "stop_dist_used": round(stop_dist, 6),
-
-                # economics
-                "spread_pips": float(spread_pips),
-                "slippage_pips": float(slippage_pips),
-                "commission": float(commission_per_trade),
-
-                # outcomes
-                "pnl": round(pnl, 6),
-                "equity_after": round(equity, 6),
-            })
+            trades.append(
+                {
+                    "time_open": ts,
+                    "time_close": feat_df.index[i + 1],
+                    # decision/result
+                    "side": int(side),
+                    "p_up": float(proba),
+                    "explored": int(explored),
+                    "eff_threshold": float(eff_threshold),
+                    "eff_risk": float(eff_risk),
+                    # prices & sizing (mid vs exec after costs)
+                    "entry_price": round(entry_mid, 6),  # mid used for sizing
+                    "entry_exec": round(entry_exec, 6),  # executed price after costs
+                    "exit_exec": round(exit_exec, 6),  # executed exit price after costs
+                    "units_raw": float(units),
+                    "units": round(units, 6),
+                    # risk model (so Live can compute SL/TP identically)
+                    "atr_used": round(bar_atr, 6),
+                    "stop_dist_used": round(stop_dist, 6),
+                    # economics
+                    "spread_pips": float(spread_pips),
+                    "slippage_pips": float(slippage_pips),
+                    "commission": float(commission_per_trade),
+                    # outcomes
+                    "pnl": round(pnl, 6),
+                    "equity_after": round(equity, 6),
+                }
+            )
 
         # keep learning each bar
-        model.partial_fit(X_full[i:i + 1], y_full[i:i + 1])
+        model.partial_fit(X_full[i : i + 1], y_full[i : i + 1])
 
         # optional stop at profit target
         if stop_at_profit_target_pct is not None:
