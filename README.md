@@ -1,3 +1,5 @@
+[![ci](https://github.com/JKExx/selflearn-trader-prop-copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/JKExx/selflearn-trader-prop-copilot/actions/workflows/ci.yml)
+
 # SelfLearn Trader (MVP)
 
 An end-to-end **self-learning trading app** that updates its model after each trade outcome.
