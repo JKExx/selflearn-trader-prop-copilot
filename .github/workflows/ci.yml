@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  lint-and-import:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,23 +14,31 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install deps
+      - name: Install Ruff
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install ruff==0.5.7 pyflakes
+          pip install ruff==0.5.7
 
-      - name: Ruff version & config
+      - name: Show Ruff version & config
         run: |
           ruff --version
           echo "---- ruff config ----"
           ruff config
 
-      - name: Ruff clean (drop cache)
-        run: ruff clean
+      - name: Ruff (lint, no cache)
+        run: |
+          ruff clean || true
+          ruff check --output-format=github --no-cache .
 
-      - name: Ruff (lint)
-        run: ruff check --output-format=github --no-cache .
+  compile-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Import check (best-effort)
-        run: python -m pyflakes app || true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Compile-only smoke test (no imports of third-party libs)
+      - name: Compile stdlib syntax
+        run: python -m compileall -q app
