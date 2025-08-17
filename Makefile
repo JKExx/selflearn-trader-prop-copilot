@@ -20,3 +20,10 @@ ci: clean lint test
 clean:
 	find . -name "__pycache__" -type d -prune -exec rm -rf {} +
 	$(RUFF) clean || true
+
+fmt:
+	ruff format .
+
+fix:
+	ruff check --select I,UP --fix .
+	ruff format .
