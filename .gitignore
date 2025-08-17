@@ -37,3 +37,9 @@ __pycache__/
 *.py[cod]
 logs/
 *.csv
+__pycache__/
+*.py[cod]
+logs/
+.state/
+*.csv
+.secrets/

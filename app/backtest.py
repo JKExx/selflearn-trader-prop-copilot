@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Dict, Optional
+
 import numpy as np
 import pandas as pd
 
-from .models.online_classifier import OnlineClassifier
 from .features import make_features
+from .models.online_classifier import OnlineClassifier
 
 
 def _to_numpy(x):
@@ -72,7 +72,7 @@ def run_backtest(
     epsilon_decay_trades: int = 0,  # 0 = constant
     # warm-up
     warmup_bars: int = 300,
-    trade_start_date: Optional[str] = None,  # UTC date string -> allow learning but no trades before
+    trade_start_date: str | None = None,  # UTC date string -> allow learning but no trades before
     starting_cash: float = 10_000.0,
     # sizing / costs
     risk_per_trade: float = 0.005,
@@ -90,21 +90,21 @@ def run_backtest(
     enforce_daily_cap: bool = True,
     daily_cap_pct: float = 0.05,
     day_boundary_tz: str = "America/New_York",
-    friday_cutoff_local: Optional[int] = None,
-    stop_at_profit_target_pct: Optional[float] = None,  # e.g., 0.08
+    friday_cutoff_local: int | None = None,
+    stop_at_profit_target_pct: float | None = None,  # e.g., 0.08
     # news filter (precomputed events)
-    news_events: Optional[list[dict]] = None,
-    news_keywords: Optional[list[str]] = None,
+    news_events: list[dict] | None = None,
+    news_keywords: list[str] | None = None,
     news_blackout_minutes: int = 0,
     # -------- Guardrails (new) --------
-    trailing_hwm_cap_pct: Optional[float] = None,   # stop whole phase if drop from HWM > X%
-    max_trades_per_day: Optional[int] = None,       # cap number of trades per prop day
+    trailing_hwm_cap_pct: float | None = None,   # stop whole phase if drop from HWM > X%
+    max_trades_per_day: int | None = None,       # cap number of trades per prop day
     loss_streak_pause_bars: int = 0,                # pause N bars after loss streak
     loss_streak_trigger: int = 0,                   # trigger after N consecutive losses
-    dd_adapt_threshold_pct: Optional[float] = None, # enter adapt mode when eq <= HWM*(1-X)
-    dd_adapt_risk: Optional[float] = None,          # risk while in adapt mode
+    dd_adapt_threshold_pct: float | None = None, # enter adapt mode when eq <= HWM*(1-X)
+    dd_adapt_risk: float | None = None,          # risk while in adapt mode
     dd_adapt_threshold_bump: float = 0.0,           # add to threshold while in adapt
-    max_intraday_dd_from_high_pct: Optional[float] = None,  # lock rest of day if drop from day-high > X
+    max_intraday_dd_from_high_pct: float | None = None,  # lock rest of day if drop from day-high > X
 ) -> BacktestResult:
     """One-bar open/close simulator with online learning + prop guardrails."""
 
@@ -119,7 +119,7 @@ def run_backtest(
 
     # --- feature pipeline ---
     feats_out = make_features(df)
-    feat_df = feats_out[0].copy() if isinstance(feats_out, (tuple, list)) else feats_out.copy()
+    feat_df = feats_out[0].copy() if isinstance(feats_out, tuple | list) else feats_out.copy()
     if "y_next_up" not in feat_df.columns:
         raise RuntimeError("make_features() must produce 'y_next_up'.")
 
@@ -175,7 +175,7 @@ def run_backtest(
     slip_px_out = float(slippage_pips) * pip
 
     # loop state
-    trades: List[Dict] = []
+    trades: list[dict] = []
     equity = starting_cash
     phase_start_eq = starting_cash
     stop_reason = None

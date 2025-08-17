@@ -1,10 +1,21 @@
+"""
+Streamlit launcher. Use:
+    python -m streamlit run streamlit_app.py
+"""
+import os
+import sys
 
-import streamlit as st
-import traceback
-try:
-    from app.ui.st_app import main
+ROOT = os.path.abspath(os.path.dirname(__file__))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+
+def _main() -> None:
+    # Import inside to keep E402 happy and avoid partial import side-effects
+    from app.ui.st_app import main  # noqa: E402
+
     main()
-except Exception:
-    st.set_page_config(page_title="SelfLearn Trader", layout="wide")
-    st.error("App failed to load.")
-    st.code(traceback.format_exc())
+
+
+if __name__ == "__main__":
+    _main()
