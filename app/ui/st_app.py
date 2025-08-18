@@ -821,6 +821,19 @@ def main():
     # ---------------- Go Live ----------------
     with tabs[5]:
         st.subheader("Go Live (paper signals for Copiix)")
+        st.session_state.setdefault("quiet_bars", 0)
+
+        eff_threshold, eff_eps = float(threshold), float(st.session_state.get("epsilon_start", 0.0))
+        if st.session_state.get("trickle_on", False):
+            eff_threshold, eff_eps = _trickle_effective(
+                eff_threshold,
+                eff_eps,
+                quiet_bars=int(st.session_state.get("quiet_bars", 0)),
+                n=int(st.session_state.get("trickle_n", 12)),
+                dth=float(st.session_state.get("trickle_dth", 0.02)),
+                deps=float(st.session_state.get("trickle_deps", 0.02)),
+            )
+        st.caption(f"Effective live params → threshold={eff_threshold:.2f}  epsilon={eff_eps:.2f}")
 
         slack_url = st.text_input("Slack webhook URL (optional)", value=st.session_state.get("slack_url", ""))
         discord_url = st.text_input("Discord webhook URL (optional)", value=st.session_state.get("discord_url", ""))
@@ -1162,6 +1175,30 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# --- helpers: test oanda + trickle (auto-added) ---
+def _test_oanda_connection(get_ohlcv_oanda, symbol: str, interval: str):
+    import pandas as pd
+    import streamlit as st
+
+    try:
+        df = get_ohlcv_oanda(symbol=symbol, interval=interval, count=10, complete_only=True)
+        if df is None or len(df) == 0:
+            st.error("OANDA returned no data.")
+            return
+        last = pd.to_datetime(df.index[-1]).tz_convert("UTC")
+        price = float(df["close"].iloc[-1])
+        st.success(f"OANDA OK · last bar (UTC)={last} · close={price:.2f}")
+    except Exception as e:
+        st.error(f"OANDA error: {type(e).__name__}: {e}")
+
+
+def _trickle_effective(threshold: float, eps: float, *, quiet_bars: int, n: int, dth: float, deps: float):
+    if quiet_bars >= n:
+        return max(0.0, min(1.0, threshold - dth)), max(0.0, eps + deps)
+    return threshold, eps
+
 
 # --- helpers: heartbeat (auto-added) ---
 
