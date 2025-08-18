@@ -33,6 +33,11 @@ from ..backtest import _std_ohlcv as _std_ohlcv_bt
 from ..backtest import run_backtest
 from ..dataio.oanda import _to_oanda_instrument, get_ohlcv_oanda
 
+# fallback defaults for linter; overridden in Go Live before use
+eff_threshold = 0.69
+eff_eps = 0.03
+
+
 st.sidebar.caption(f"Prop Copilot {os.getenv('APP_VERSION', 'dev')}")
 
 # ---------- internal modules ----------
@@ -655,9 +660,9 @@ def main():
                         df,
                         symbol=symbol,
                         interval=interval,
-                        threshold=st.session_state.get("threshold", 0.69),
-                        epsilon_start=st.session_state.get("eps_start", 0.03),
-                        epsilon_final=st.session_state.get("eps_final", 0.00),
+                        threshold=eff_threshold,
+                        epsilon_start=eff_eps,
+                        epsilon_final=eff_eps,
                         epsilon_decay_trades=int(st.session_state.get("eps_decay_trades", 75)),
                         warmup_bars=int(st.session_state.get("min_samples", 1000)),
                         trade_start_date=st.session_state.get("trade_start") or None,
@@ -702,9 +707,11 @@ def main():
                         dd_adapt_threshold_bump=st.session_state.get("dd_adapt_threshold_bump", 0.0)
                         if st.session_state.get("dd_adapt_enabled", True)
                         else 0.0,
-                        max_intraday_dd_from_high_pct=st.session_state.get("max_intraday_dd_from_high_pct")
-                        if st.session_state.get("intraday_dd_enabled", True)
-                        else None,
+                        max_intraday_dd_from_high_pct=(
+                            st.session_state.get("max_intraday_dd_from_high_pct")
+                            if st.session_state.get("intraday_dd_enabled", True)
+                            else None
+                        ),
                     )
 
                 st.session_state["last_result"] = res
@@ -821,6 +828,32 @@ def main():
     # ---------------- Go Live ----------------
     with tabs[5]:
         st.subheader("Go Live (paper signals for Copiix)")
+        st.number_input(
+            "Auto-refresh (ms)",
+            min_value=500,
+            max_value=300000,
+            value=int(st.session_state.get("live_refresh_ms", 60000)),
+            step=500,
+            key="live_refresh_ms",
+        )
+        ## eff_params START
+        # Baseline from sidebar/session
+        st.session_state.setdefault("quiet_bars", 0)
+        eff_threshold = float(st.session_state.get("threshold", 0.69))
+        eff_eps = float(st.session_state.get("epsilon_start", st.session_state.get("eps_start", 0.03)))
+        # Trickle adjustment (optional)
+        if st.session_state.get("trickle_on", False):
+            eff_threshold, eff_eps = _trickle_effective(
+                eff_threshold,
+                eff_eps,
+                quiet_bars=int(st.session_state.get("quiet_bars", 0)),
+                n=int(st.session_state.get("trickle_n", 12)),
+                dth=float(st.session_state.get("trickle_dth", 0.02)),
+                deps=float(st.session_state.get("trickle_deps", 0.02)),
+            )
+        st.caption(f"Effective live params → threshold={eff_threshold:.2f}  epsilon={eff_eps:.2f}")
+        ## eff_params END
+
         st.session_state.setdefault("quiet_bars", 0)
 
         eff_threshold, eff_eps = float(threshold), float(st.session_state.get("epsilon_start", 0.0))
@@ -833,7 +866,6 @@ def main():
                 dth=float(st.session_state.get("trickle_dth", 0.02)),
                 deps=float(st.session_state.get("trickle_deps", 0.02)),
             )
-        st.caption(f"Effective live params → threshold={eff_threshold:.2f}  epsilon={eff_eps:.2f}")
 
         slack_url = st.text_input("Slack webhook URL (optional)", value=st.session_state.get("slack_url", ""))
         discord_url = st.text_input("Discord webhook URL (optional)", value=st.session_state.get("discord_url", ""))
@@ -921,24 +953,72 @@ def main():
 
                 # live params (parity vs adaptive)
                 if parity_mode:
-                    eps_start_live = 0.0
-                    eps_final_live = 0.0
                     eps_decay_live = 0
                     persist_live = st.session_state.get("persist_model", False)
                 else:
-                    eps_start_live = st.session_state.get("eps_start", 0.03)
-                    eps_final_live = st.session_state.get("eps_final", 0.00)
                     eps_decay_live = int(st.session_state.get("eps_decay_trades", 75))
                     persist_live = True
 
                 # soft stops in live (simulate last closed bar)
+                # --- eff params (compute before live call) ---
+                st.session_state.setdefault("quiet_bars", 0)
+                eff_threshold = float(st.session_state.get("threshold", 0.69))
+                eff_eps = float(st.session_state.get("epsilon_start", st.session_state.get("eps_start", 0.03)))
+                if st.session_state.get("trickle_on", False):
+                    eff_threshold, eff_eps = _trickle_effective(
+                        eff_threshold,
+                        eff_eps,
+                        quiet_bars=int(st.session_state.get("quiet_bars", 0)),
+                        n=int(st.session_state.get("trickle_n", 12)),
+                        dth=float(st.session_state.get("trickle_dth", 0.02)),
+                        deps=float(st.session_state.get("trickle_deps", 0.02)),
+                    )
+                # --- eff params (compute before live call) ---
+                st.session_state.setdefault("quiet_bars", 0)
+                eff_threshold = float(st.session_state.get("threshold", 0.69))
+                eff_eps = float(st.session_state.get("epsilon_start", st.session_state.get("eps_start", 0.03)))
+                if st.session_state.get("trickle_on", False):
+                    eff_threshold, eff_eps = _trickle_effective(
+                        eff_threshold,
+                        eff_eps,
+                        quiet_bars=int(st.session_state.get("quiet_bars", 0)),
+                        n=int(st.session_state.get("trickle_n", 12)),
+                        dth=float(st.session_state.get("trickle_dth", 0.02)),
+                        deps=float(st.session_state.get("trickle_deps", 0.02)),
+                    )
+                # --- eff params (compute before live call) ---
+                st.session_state.setdefault("quiet_bars", 0)
+                eff_threshold = float(st.session_state.get("threshold", 0.69))
+                eff_eps = float(st.session_state.get("epsilon_start", st.session_state.get("eps_start", 0.03)))
+                if st.session_state.get("trickle_on", False):
+                    eff_threshold, eff_eps = _trickle_effective(
+                        eff_threshold,
+                        eff_eps,
+                        quiet_bars=int(st.session_state.get("quiet_bars", 0)),
+                        n=int(st.session_state.get("trickle_n", 12)),
+                        dth=float(st.session_state.get("trickle_dth", 0.02)),
+                        deps=float(st.session_state.get("trickle_deps", 0.02)),
+                    )
+                # --- eff params (compute before live call) ---
+                st.session_state.setdefault("quiet_bars", 0)
+                eff_threshold = float(st.session_state.get("threshold", 0.69))
+                eff_eps = float(st.session_state.get("epsilon_start", st.session_state.get("eps_start", 0.03)))
+                if st.session_state.get("trickle_on", False):
+                    eff_threshold, eff_eps = _trickle_effective(
+                        eff_threshold,
+                        eff_eps,
+                        quiet_bars=int(st.session_state.get("quiet_bars", 0)),
+                        n=int(st.session_state.get("trickle_n", 12)),
+                        dth=float(st.session_state.get("trickle_dth", 0.02)),
+                        deps=float(st.session_state.get("trickle_deps", 0.02)),
+                    )
                 res = run_backtest(
                     df_live,
                     symbol=symbol,
                     interval=interval,
-                    threshold=st.session_state.get("threshold", 0.69),
-                    epsilon_start=eps_start_live,
-                    epsilon_final=eps_final_live,
+                    threshold=eff_threshold,
+                    epsilon_start=eff_eps,
+                    epsilon_final=eff_eps,
                     epsilon_decay_trades=eps_decay_live,
                     warmup_bars=int(st.session_state.get("min_samples", 1000)),
                     trade_start_date=st.session_state.get("trade_start") or None,
