@@ -33,19 +33,19 @@ fi
 
 echo "▶ Starting app (bind ${BIND}:${PORT})"
 
-_run() {
-  python -m streamlit run streamlit_app.py \
-    --server.address "${BIND}" \
-    --server.port "${PORT}" \
-    --server.headless true
-}
+CMD=( python -m streamlit run streamlit_app.py
+      --server.address "${BIND}"
+      --server.port "${PORT}"
+      --server.headless true )
 
 if [ "${DETACH}" = "1" ]; then
   LOG="${LOG:-/tmp/prop-copilot.streamlit.log}"
-  nohup bash -c "_run" >/dev/null 2>>"${LOG}" &
+  # run command directly (no subshell function)
+  nohup "${CMD[@]}" >/dev/null 2>>"${LOG}" &
   PID=$!
   echo "${PID}" > .streamlit.pid
   echo "▶ PID ${PID} (detached). Log: ${LOG}"
+
   echo -n "⏳ Waiting for Streamlit to be ready"
   for _ in $(seq 1 120); do
     if curl -fsS "${HEALTH_URL}" >/dev/null 2>&1; then break; fi
@@ -59,11 +59,11 @@ if [ "${DETACH}" = "1" ]; then
   exit 0
 fi
 
+# --- foreground (Ctrl+C stops) ---
 cleanup(){ echo; echo "⏹ Streamlit stopped."; }
 trap cleanup EXIT INT
 
-# foreground
-_run &
+"${CMD[@]}" &
 PID=$!
 
 echo -n "⏳ Waiting for Streamlit to be ready"
